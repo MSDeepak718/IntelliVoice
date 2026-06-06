@@ -7,9 +7,12 @@ Sets up the FastAPI app with middleware, routes, and lifecycle events.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 
 from config import get_settings, setup_logging
 from config.logging_config import get_logger
@@ -76,6 +79,16 @@ def create_app() -> FastAPI:
     app.include_router(health.router, tags=["Health"])
     app.include_router(audio_ws.router, tags=["Audio WebSocket"])
     app.include_router(chat.router, tags=["Chat"])
+
+    # Serve frontend static files
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    if frontend_dir.exists():
+        @app.get("/", include_in_schema=False)
+        async def root():
+            return RedirectResponse(url="/app/index.html")
+
+        app.mount("/app", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+        logger.info("serving_frontend", path=str(frontend_dir))
 
     return app
 

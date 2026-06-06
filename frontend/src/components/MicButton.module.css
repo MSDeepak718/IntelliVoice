@@ -1,0 +1,83 @@
+.section {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 16px 0;
+}
+
+.micBtn {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.micBtn svg {
+  width: 28px;
+  height: 28px;
+  transition: transform var(--transition-base);
+}
+
+.micBtn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: var(--shadow-glow);
+  transform: scale(1.04);
+}
+
+.micBtn:disabled {
+  cursor: wait;
+}
+
+.recording {
+  border-color: var(--error);
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error);
+  box-shadow: 0 0 40px var(--error-glow);
+  animation: pulseRecording 2s ease-in-out infinite;
+}
+
+.recording svg {
+  transform: scale(1.1);
+}
+
+.processing {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  animation: pulseProcessing 1.5s ease-in-out infinite;
+}
+
+.ctrlBtn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.ctrlBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+  background: var(--bg-glass-hover);
+}
+
+.ctrlBtn svg {
+  width: 18px;
+  height: 18px;
+}
