@@ -42,6 +42,7 @@ class ModelConfig:
     device_map: str = "auto"
     quantization_config: Optional[Dict] = None
     extra_kwargs: Dict = field(default_factory=dict)
+    download_via_hf: bool = True
 
     @property
     def vram_gb(self) -> float:
@@ -59,6 +60,7 @@ class ModelRegistry:
         estimated_vram_mb=50,
         phase=LoadingPhase.ALWAYS,
         torch_dtype="float32",
+        download_via_hf=False,
     )
 
     DEEPFILTERNET = ModelConfig(
@@ -68,6 +70,7 @@ class ModelRegistry:
         estimated_vram_mb=100,
         phase=LoadingPhase.ALWAYS,
         torch_dtype="float32",
+        download_via_hf=False,
     )
 
     # ---- Layer 2: Acoustic Encoder ----
@@ -154,6 +157,7 @@ class ModelRegistry:
         estimated_vram_mb=50,
         phase=LoadingPhase.GENERATION,
         torch_dtype="float32",
+        download_via_hf=False,
     )
 
     @classmethod

@@ -35,33 +35,5 @@ services:
       mongodb:
         condition: service_healthy
 
-  # ---------- Backend ----------
-  backend:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.backend
-    container_name: intellivoice-backend
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    environment:
-      - MONGODB_URI=mongodb://intellivoice:intellivoice@mongodb:27017
-    volumes:
-      - ./models:/app/models
-      - ./backend:/app/backend
-      - ./config:/app/config
-    depends_on:
-      mongodb:
-        condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
 volumes:
   mongo-data:

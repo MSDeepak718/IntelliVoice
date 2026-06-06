@@ -50,6 +50,16 @@ class ModelLoader:
         """
         model_dir = self.cache_dir / model_config.name
 
+        if not model_config.download_via_hf:
+            logger.info(
+                "model_managed_by_library",
+                model=model_config.name,
+                reason="Loaded via Torch Hub or package dependency",
+            )
+            # Create a placeholder directory so it shows as existing
+            model_dir.mkdir(parents=True, exist_ok=True)
+            return model_dir
+
         if model_dir.exists() and not force:
             logger.info(
                 "model_cached",
@@ -90,7 +100,7 @@ class ModelLoader:
                 path = self.download_model(model_config, force=force)
                 results[model_config.name] = {
                     "status": "ok",
-                    "path": str(path),
+                    "path": "Managed by Library" if not model_config.download_via_hf else str(path),
                 }
             except Exception as e:
                 results[model_config.name] = {
@@ -101,6 +111,8 @@ class ModelLoader:
 
     def get_model_path(self, model_config: ModelConfig) -> Optional[Path]:
         """Get the local path for a model (None if not downloaded)."""
+        if not model_config.download_via_hf:
+            return Path("TorchHub/Library")
         model_dir = self.cache_dir / model_config.name
         return model_dir if model_dir.exists() else None
 
@@ -112,7 +124,7 @@ class ModelLoader:
             status[model_config.name] = {
                 "downloaded": path is not None,
                 "path": str(path) if path else None,
-                "hf_id": model_config.hf_model_id,
+                "hf_id": "Torch Hub / Pip Package" if not model_config.download_via_hf else model_config.hf_model_id,
                 "vram_mb": model_config.estimated_vram_mb,
             }
         return status
