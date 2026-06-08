@@ -83,7 +83,14 @@ async def audio_websocket(websocket: WebSocket):
                 from backend.layers.preprocessing.audio_utils import bytes_to_waveform
                 waveform, sr = bytes_to_waveform(bytes(session.audio_buffer))
 
-                is_speech = pipeline.vad.is_speech(waveform)
+                # Check VAD on the last 0.5 seconds of audio
+                chunk_len = int(0.5 * sr)
+                if waveform.shape[-1] >= chunk_len:
+                    recent_waveform = waveform[..., -chunk_len:]
+                else:
+                    recent_waveform = waveform
+
+                is_speech = pipeline.vad.is_speech(recent_waveform)
 
                 if is_speech:
                     if not session.is_speaking:
@@ -124,7 +131,7 @@ async def audio_websocket(websocket: WebSocket):
                             await websocket.send_json({
                                 "type": "transcription",
                                 "text": result["transcription"],
-                                "emotion": result.get("emotion", "neutral"),
+                                "emotion": result.get("metadata", {}).get("emotion", "neutral"),
                                 "language": result.get("metadata", {}).get("language", "unknown"),
                             })
 

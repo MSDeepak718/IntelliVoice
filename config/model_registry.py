@@ -3,6 +3,14 @@ IntelliVoice — Model Registry
 
 Defines all model configurations, HuggingFace IDs, VRAM budgets,
 and loading parameters for every layer in the pipeline.
+
+Stack (target: RTX 4080 16GB VRAM, 64 GB RAM):
+    1. Preprocessing: Silero VAD + DeepFilterNet (CPU / FP32)
+    2A. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
+    2B. Emotion/Speaker: SenseVoice-Small + ECAPA-TDNN (FP16)
+    3. Memory: LangGraph + MongoDB (CPU only)
+    4. Core Reasoning: Qwen3 14B (INT4 NF4 double quant)
+    5. TTS Synthesis: CosyVoice 2 (FP16)
 """
 
 from __future__ import annotations
@@ -20,12 +28,13 @@ class ModelPrecision(str, Enum):
     INT4 = "int4"
 
 
-class LoadingPhase(int, Enum):
-    """Which phase a model belongs to for VRAM management."""
-    ALWAYS = 0       # Tiny models, always loaded (VAD, DeepFilter)
-    UNDERSTANDING = 1  # Encoders: XLS-R, Qwen-Audio, Emotion2Vec, WavLM
-    REASONING = 2      # LLM: Qwen3 MoE
-    GENERATION = 3     # TTS: CosyVoice 2, HiFi-GAN
+class LoadingOrder(int, Enum):
+    """Enforced specific loading order at startup."""
+    PREPROCESSING = 1
+    ASR = 2
+    EMOTION_SPEAKER = 3
+    REASONING = 4
+    TTS = 5
 
 
 @dataclass
@@ -35,7 +44,7 @@ class ModelConfig:
     hf_model_id: str
     precision: ModelPrecision = ModelPrecision.FP16
     estimated_vram_mb: int = 0
-    phase: LoadingPhase = LoadingPhase.UNDERSTANDING
+    order: LoadingOrder = LoadingOrder.PREPROCESSING
     revision: Optional[str] = None
     trust_remote_code: bool = False
     torch_dtype: str = "float16"
@@ -43,6 +52,7 @@ class ModelConfig:
     quantization_config: Optional[Dict] = None
     extra_kwargs: Dict = field(default_factory=dict)
     download_via_hf: bool = True
+    notes: str = ""
 
     @property
     def vram_gb(self) -> float:
@@ -52,13 +62,12 @@ class ModelConfig:
 class ModelRegistry:
     """Central registry of all models used in the pipeline."""
 
-    # ---- Layer 1: Preprocessing ----
     SILERO_VAD = ModelConfig(
         name="silero_vad",
         hf_model_id="snakers4/silero-vad",
         precision=ModelPrecision.FP32,
         estimated_vram_mb=50,
-        phase=LoadingPhase.ALWAYS,
+        order=LoadingOrder.PREPROCESSING,
         torch_dtype="float32",
         download_via_hf=False,
     )
@@ -68,96 +77,62 @@ class ModelRegistry:
         hf_model_id="deepfilternet/DeepFilterNet3",
         precision=ModelPrecision.FP32,
         estimated_vram_mb=100,
-        phase=LoadingPhase.ALWAYS,
+        order=LoadingOrder.PREPROCESSING,
         torch_dtype="float32",
         download_via_hf=False,
     )
 
-    # ---- Layer 2: Acoustic Encoder ----
-    XLSR_1B = ModelConfig(
-        name="xlsr_1b",
-        hf_model_id="facebook/wav2vec2-xls-r-1b",
+    WHISPER = ModelConfig(
+        name="whisper",
+        hf_model_id="deepdml/faster-whisper-large-v3-turbo-ct2",
         precision=ModelPrecision.FP16,
-        estimated_vram_mb=2048,
-        phase=LoadingPhase.UNDERSTANDING,
+        estimated_vram_mb=1500,
+        order=LoadingOrder.ASR,
         torch_dtype="float16",
+        notes="Loaded via faster-whisper",
     )
 
-    # ---- Layer 3: Audio-Semantic Understanding ----
-    QWEN_AUDIO = ModelConfig(
-        name="qwen_audio",
-        hf_model_id="Qwen/Qwen-Audio-Chat",
-        precision=ModelPrecision.INT4,
-        estimated_vram_mb=4096,
-        phase=LoadingPhase.UNDERSTANDING,
-        trust_remote_code=True,
-        torch_dtype="float16",
-        quantization_config={
-            "load_in_4bit": True,
-            "bnb_4bit_compute_dtype": "float16",
-            "bnb_4bit_quant_type": "nf4",
-            "bnb_4bit_use_double_quant": True,
-        },
-    )
-
-    # ---- Layer 4: Prosody & Emotion ----
-    EMOTION2VEC = ModelConfig(
-        name="emotion2vec",
-        hf_model_id="emotion2vec/emotion2vec_plus_large",
+    SENSEVOICE = ModelConfig(
+        name="sensevoice",
+        hf_model_id="FunAudioLLM/SenseVoiceSmall",
         precision=ModelPrecision.FP16,
         estimated_vram_mb=300,
-        phase=LoadingPhase.UNDERSTANDING,
-        trust_remote_code=True,
+        order=LoadingOrder.EMOTION_SPEAKER,
         torch_dtype="float16",
+        trust_remote_code=True,
     )
 
-    # ---- Layer 5: Speaker Understanding ----
-    WAVLM_LARGE = ModelConfig(
-        name="wavlm_large",
-        hf_model_id="microsoft/wavlm-large",
+    ECAPA_TDNN = ModelConfig(
+        name="ecapa_tdnn",
+        hf_model_id="speechbrain/spkrec-ecapa-voxceleb",
         precision=ModelPrecision.FP16,
-        estimated_vram_mb=1200,
-        phase=LoadingPhase.UNDERSTANDING,
+        estimated_vram_mb=100,
+        order=LoadingOrder.EMOTION_SPEAKER,
         torch_dtype="float16",
     )
 
-    # ---- Layer 6: Core Reasoning ----
-    QWEN3_MOE = ModelConfig(
-        name="qwen3_moe",
-        hf_model_id="Qwen/Qwen3-30B-A3B",
+    QWEN3_14B = ModelConfig(
+        name="qwen3_14b",
+        hf_model_id="Qwen/Qwen3-14B",
         precision=ModelPrecision.INT4,
-        estimated_vram_mb=10240,
-        phase=LoadingPhase.REASONING,
-        trust_remote_code=True,
+        estimated_vram_mb=8500,
+        order=LoadingOrder.REASONING,
         torch_dtype="float16",
         quantization_config={
             "load_in_4bit": True,
-            "bnb_4bit_compute_dtype": "float16",
             "bnb_4bit_quant_type": "nf4",
             "bnb_4bit_use_double_quant": True,
         },
     )
 
-    # ---- Layer 10: Speech Generation ----
     COSYVOICE2 = ModelConfig(
         name="cosyvoice2",
         hf_model_id="FunAudioLLM/CosyVoice2-0.5B",
         precision=ModelPrecision.FP16,
-        estimated_vram_mb=2048,
-        phase=LoadingPhase.GENERATION,
+        estimated_vram_mb=1500,
+        order=LoadingOrder.TTS,
         trust_remote_code=True,
         torch_dtype="float16",
-    )
-
-    # ---- Layer 12: Audio Synthesis ----
-    HIFIGAN = ModelConfig(
-        name="hifigan",
-        hf_model_id="nvidia/hifigan-22khz",
-        precision=ModelPrecision.FP32,
-        estimated_vram_mb=50,
-        phase=LoadingPhase.GENERATION,
-        torch_dtype="float32",
-        download_via_hf=False,
     )
 
     @classmethod
@@ -166,37 +141,21 @@ class ModelRegistry:
         return [
             cls.SILERO_VAD,
             cls.DEEPFILTERNET,
-            cls.XLSR_1B,
-            cls.QWEN_AUDIO,
-            cls.EMOTION2VEC,
-            cls.WAVLM_LARGE,
-            cls.QWEN3_MOE,
+            cls.WHISPER,
+            cls.SENSEVOICE,
+            cls.ECAPA_TDNN,
+            cls.QWEN3_14B,
             cls.COSYVOICE2,
-            cls.HIFIGAN,
         ]
 
     @classmethod
-    def get_models_by_phase(cls, phase: LoadingPhase) -> list[ModelConfig]:
-        """Return models belonging to a specific loading phase."""
-        return [m for m in cls.get_all_models() if m.phase == phase]
-
-    @classmethod
-    def get_phase_vram_mb(cls, phase: LoadingPhase) -> int:
-        """Estimate total VRAM for a loading phase."""
-        return sum(m.estimated_vram_mb for m in cls.get_models_by_phase(phase))
-
-    @classmethod
     def print_vram_budget(cls) -> None:
-        """Print VRAM budget summary."""
-        print("\n=== IntelliVoice VRAM Budget ===")
-        total = 0
-        for phase in LoadingPhase:
-            vram = cls.get_phase_vram_mb(phase)
-            total += vram
-            models = cls.get_models_by_phase(phase)
-            print(f"\n  Phase {phase.name} ({vram / 1024:.1f} GB):")
-            for m in models:
-                print(f"    - {m.name}: {m.estimated_vram_mb}MB ({m.precision.value})")
-        print(f"\n  Total (all loaded): {total / 1024:.1f} GB")
-        print("  RTX 4080 Budget:    16.0 GB")
-        print(f"  {'✅ Fits' if total / 1024 <= 16 else '⚠️  Requires model swapping'}")
+        """Print VRAM budget breakdown."""
+        print("\n=== VRAM Budget (RTX 4080 16GB target) ===\n")
+        total_mb = 0
+        for m in cls.get_all_models():
+            print(f"  {m.name:<18} {m.estimated_vram_mb:>6} MB  ({m.vram_gb:.2f} GB)  {m.precision.value}")
+            total_mb += m.estimated_vram_mb
+        print(f"\n  {'TOTAL':<18} {total_mb:>6} MB  ({total_mb/1024:.2f} GB)")
+        print(f"  {'HEADROOM':<18} {16384 - total_mb:>6} MB  ({(16384 - total_mb)/1024:.2f} GB)")
+        print("==========================================\n")

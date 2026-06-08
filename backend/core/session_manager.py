@@ -21,9 +21,9 @@ logger = get_logger("session_manager")
 
 @dataclass
 class SessionState:
-    """State for a single WebSocket session."""
+    """State for a single session (WebSocket or REST)."""
     session_id: str
-    websocket: WebSocket
+    websocket: Optional[WebSocket] = None
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     is_active: bool = True
@@ -71,6 +71,16 @@ class SessionState:
         if metadata:
             entry["metadata"] = metadata
         self.conversation_history.append(entry)
+
+    async def send_json(self, message: dict) -> bool:
+        """Send JSON message if WebSocket is available."""
+        if self.websocket is not None:
+            try:
+                await self.websocket.send_json(message)
+                return True
+            except Exception:
+                return False
+        return False
 
 
 class SessionManager:

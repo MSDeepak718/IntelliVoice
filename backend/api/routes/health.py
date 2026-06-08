@@ -11,6 +11,7 @@ import time
 from fastapi import APIRouter, Request
 
 from config import get_settings
+from config.model_registry import ModelRegistry, LoadingOrder
 
 router = APIRouter()
 
@@ -39,20 +40,19 @@ async def gpu_health(request: Request):
             "available": gpu_manager.is_cuda,
             "device": str(gpu_manager.device),
             "memory": gpu_manager.get_memory_stats(),
+            "loaded_models": list(gpu_manager._slots.keys()),
         },
         "models": {
             "vad": pipeline.vad.is_loaded,
             "noise_suppressor": pipeline.noise_suppressor.is_loaded,
-            "xlsr_encoder": pipeline.xlsr_encoder.is_loaded,
-            "qwen_audio": pipeline.qwen_audio.is_loaded,
-            "emotion_analyzer": pipeline.emotion_analyzer.is_loaded,
-            "speaker_encoder": pipeline.speaker_encoder.is_loaded,
+            "asr": pipeline.asr._is_loaded,
+            "emotion_analyzer": pipeline.emotion_analyzer._is_loaded,
+            "speaker_encoder": pipeline.speaker_encoder._is_loaded,
             "reasoner": pipeline.reasoner.is_loaded,
             "tts": pipeline.tts.is_loaded,
-            "vocoder": pipeline.vocoder.is_loaded,
         },
         "memory": {
-            "active_sessions": pipeline.conversation_memory.active_sessions,
+            "active_sessions": pipeline.memory.active_sessions,
             "mongodb_connected": pipeline.long_term_memory.is_connected,
         },
     }
@@ -60,7 +60,7 @@ async def gpu_health(request: Request):
 
 @router.get("/health/config")
 async def config_info():
-    """Return non-sensitive configuration info."""
+    """Return non-sensitive configuration + VRAM budget summary."""
     settings = get_settings()
     return {
         "app_name": settings.app_name,
@@ -68,4 +68,7 @@ async def config_info():
         "sample_rate": settings.sample_rate,
         "chunk_size_ms": settings.chunk_size_ms,
         "max_audio_length_s": settings.max_audio_length_s,
+        "vram_budget_gb": {
+            "total_resident_mb": sum(m.estimated_vram_mb for m in ModelRegistry.get_all_models()),
+        },
     }

@@ -1,6 +1,7 @@
 # ============================================================
 # IntelliVoice — Python Dependencies
 # ============================================================
+# Target: RTX 4080 16GB, Python 3.11+
 
 # ---------- Core Framework ----------
 fastapi>=0.115.0
@@ -48,6 +49,15 @@ langchain-community>=0.3.0
 # ---------- MongoDB ----------
 pymongo>=4.8.0
 motor>=3.5.0
+
+# ---------- ASR / Voice / Audio ----------
+faster-whisper>=1.0.0
+speechbrain>=1.0.0
+funasr>=1.0.0
+
+# ---------- TTS / Voice Cloning ----------
+# CosyVoice 2 (the official package, optional — HF transformers fallback works)
+# cosyvoice>=1.0.0
 
 # ---------- Logging & Monitoring ----------
 structlog>=24.0.0

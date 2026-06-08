@@ -80,7 +80,7 @@ class ModelLoader:
                 repo_id=model_config.hf_model_id,
                 local_dir=str(model_dir),
                 revision=model_config.revision,
-                token=self.hf_token,
+                token=self.hf_token or True,  # Uses env var or huggingface-cli login cache if self.hf_token is None
             )
             logger.info("model_downloaded", model=model_config.name)
             return model_dir

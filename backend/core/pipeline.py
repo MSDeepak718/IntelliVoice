@@ -2,157 +2,134 @@
 IntelliVoice — Audio Pipeline Orchestrator
 
 The main pipeline that coordinates all layers from audio input
-through speech output. Implements three-phase VRAM management.
+through speech output. Implements strict specific loading order
+and concurrent layer execution tailored for the RTX 4080 (16GB):
+
+    1. Preprocessing: Silero VAD + DeepFilterNet (CPU / FP32)
+    2A. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
+    2B. Emotion/Speaker: SenseVoice-Small + ECAPA-TDNN (FP16)
+    3. Memory: LangGraph + MongoDB (CPU only)
+    4. Core Reasoning: Qwen3 14B (INT4 NF4 double quant)
+    5. TTS Synthesis: CosyVoice 2 (FP16)
+
+All models are loaded at startup. Whisper and SenseVoice execute concurrently.
+LLM output streams inline style tags directly to TTS model sentence-by-sentence.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
-from typing import Any, Dict, Optional, Tuple
+import re
+from typing import Any, Dict
 
 import torch
 
 from config import get_settings
 from config.logging_config import get_logger
-from config.model_registry import LoadingPhase
+from config.model_registry import LoadingOrder
 
 from backend.core.gpu_manager import GPUManager
 from backend.core.session_manager import SessionState
 
-# Layer imports
 from backend.layers.preprocessing.vad import SileroVAD
 from backend.layers.preprocessing.noise_suppression import NoiseSuppressor
 from backend.layers.preprocessing.audio_utils import (
     bytes_to_waveform,
     waveform_to_bytes,
-    waveform_to_wav_bytes,
     normalize_waveform,
 )
-from backend.layers.acoustic_encoder.xlsr_encoder import XLSREncoder
-from backend.layers.semantic.qwen_audio import QwenAudioUnderstanding
-from backend.layers.prosody.emotion2vec import Emotion2VecAnalyzer
-from backend.layers.speaker.wavlm_speaker import WavLMSpeakerEncoder
-from backend.layers.reasoning.qwen3_reasoning import Qwen3Reasoner
-from backend.layers.memory.conversation_memory import ConversationMemory
-from backend.layers.memory.long_term_memory import LongTermMemory
-from backend.layers.response_planning.planner import ResponsePlanner
-from backend.layers.speech_generation.cosyvoice import CosyVoiceSynthesizer
-from backend.layers.synthesis.hifi_gan import HiFiGANVocoder
 
 logger = get_logger("pipeline")
 
 
+from backend.layers.memory.conversation_memory import ConversationMemory
+from backend.layers.memory.long_term_memory import LongTermMemory
+from backend.layers.reasoning.qwen3_reasoning import Qwen3Reasoner
+from backend.layers.speech_generation.cosyvoice import CosyVoiceSynthesizer
+
+from backend.layers.asr.whisper_asr import WhisperASR
+from backend.layers.speaker.sensevoice import SenseVoiceAnalyzer
+from backend.layers.speaker.ecapa import EcapaSpeaker
+
+
 class AudioPipeline:
-    """
-    Main audio processing pipeline orchestrator.
-
-    Coordinates all layers in the speech-to-speech pipeline:
-        Audio → Preprocess → Encode → Understand → Reason → Plan → Synthesize → Audio
-
-    Implements three-phase VRAM management:
-        Phase 1 (Understanding): VAD, DeepFilter, XLS-R, Qwen-Audio, Emotion2Vec, WavLM
-        Phase 2 (Reasoning): Qwen3 MoE
-        Phase 3 (Generation): CosyVoice 2, HiFi-GAN
-    """
-
     def __init__(self, gpu_manager: GPUManager):
         self.gpu = gpu_manager
         self.settings = get_settings()
 
-        # Layer 1: Preprocessing (always loaded)
+        # 1. Preprocessing (CPU / FP32)
         self.vad = SileroVAD(
             threshold=self.settings.vad_threshold,
             sample_rate=self.settings.sample_rate,
         )
         self.noise_suppressor = NoiseSuppressor(sample_rate=self.settings.sample_rate)
 
-        # Layer 2-5: Understanding (Phase 1)
-        self.xlsr_encoder = XLSREncoder()
-        self.qwen_audio = QwenAudioUnderstanding()
-        self.emotion_analyzer = Emotion2VecAnalyzer()
-        self.speaker_encoder = WavLMSpeakerEncoder()
+        # 2. ASR & Emotion/Speaker (FP16)
+        self.asr = WhisperASR()
+        self.emotion_analyzer = SenseVoiceAnalyzer()
+        self.speaker_encoder = EcapaSpeaker()
 
-        # Layer 6: Reasoning (Phase 2)
-        self.reasoner = Qwen3Reasoner()
-
-        # Layer 7: Memory
-        self.conversation_memory = ConversationMemory()
+        # 3. Memory (LangGraph + MongoDB)
+        self.memory = ConversationMemory()
         self.long_term_memory = LongTermMemory()
 
-        # Layer 9: Response Planning
-        self.response_planner = ResponsePlanner()
-
-        # Layer 10 + 12: Speech Generation (Phase 3)
+        # 4 & 5. Core Reasoning & TTS
+        self.reasoner = Qwen3Reasoner()
         self.tts = CosyVoiceSynthesizer()
-        self.vocoder = HiFiGANVocoder()
 
         self._is_initialized = False
 
     async def initialize(self) -> None:
-        """Initialize the pipeline — load always-on models."""
+        """
+        Load all models at startup. Enforces strict loading order:
+        DeepFilterNet -> Whisper -> SenseVoice + ECAPA -> Qwen3 14B -> CosyVoice 2
+        """
         logger.info("initializing_pipeline")
-
-        # Load Phase 0 (always-on) models
         device = self.gpu.device
-        await self.vad.load(device=device)
-        await self.noise_suppressor.load()
 
-        # Initialize memory
-        await self.conversation_memory.initialize()
+        # Order 1: Preprocessing
+        logger.info("loading_preprocessing_models")
+        await self.vad.load(device=torch.device("cpu"))
+        await self.noise_suppressor.load()
+        self.gpu.register_model("vad", self.vad.model, LoadingOrder.PREPROCESSING, 50)
+        self.gpu.register_model("noise_suppressor", self.noise_suppressor, LoadingOrder.PREPROCESSING, 100)
+
+        # Order 2: ASR
+        logger.info("loading_asr_model")
+        await self.asr.load(device=device)
+        self.gpu.register_model("asr", self.asr.model, LoadingOrder.ASR, 1500)
+
+        # Order 3: Emotion & Speaker
+        logger.info("loading_emotion_and_speaker_models")
+        await self.emotion_analyzer.load(device=device)
+        await self.speaker_encoder.load(device=device)
+        self.gpu.register_model("emotion_analyzer", self.emotion_analyzer.model, LoadingOrder.EMOTION_SPEAKER, 300)
+        self.gpu.register_model("speaker_encoder", self.speaker_encoder.model, LoadingOrder.EMOTION_SPEAKER, 100)
+
+        # Order 4: Core Reasoning (LLM)
+        logger.info("loading_core_reasoning_model")
+        await self.reasoner.load(device=device)
+        self.gpu.register_model("reasoner", self.reasoner.model, LoadingOrder.REASONING, 8500)
+
+        # Order 5: TTS Synthesis
+        logger.info("loading_tts_model")
+        await self.tts.load(device=device)
+        self.gpu.register_model("tts", self.tts.model, LoadingOrder.TTS, 1500)
+
+        # Memory systems (CPU only)
+        await self.memory.initialize()
         await self.long_term_memory.connect()
 
         self._is_initialized = True
-        logger.info("pipeline_initialized", device=str(device))
+        logger.info("pipeline_initialized")
         self.gpu.log_gpu_info()
 
-    async def _load_understanding_models(self) -> None:
-        """Load Phase 1 (understanding) models to GPU."""
-        logger.info("loading_understanding_phase")
-        device = self.gpu.device
-
-        if not self.xlsr_encoder.is_loaded:
-            await self.xlsr_encoder.load(device=device)
-        if not self.qwen_audio.is_loaded:
-            await self.qwen_audio.load(device=device)
-        if not self.emotion_analyzer.is_loaded:
-            await self.emotion_analyzer.load(device=device)
-        if not self.speaker_encoder.is_loaded:
-            await self.speaker_encoder.load(device=device)
-
-        self.gpu.log_gpu_info()
-
-    async def _load_reasoning_model(self) -> None:
-        """Load Phase 2 (reasoning) model, offloading Phase 1."""
-        logger.info("loading_reasoning_phase")
-
-        # Offload understanding models
-        self.xlsr_encoder.offload_to_cpu()
-        self.qwen_audio.offload_to_cpu()
-        self.emotion_analyzer.offload_to_cpu()
-        self.speaker_encoder.offload_to_cpu()
-        self.gpu._cleanup_gpu()
-
-        # Load reasoning model
-        if not self.reasoner.is_loaded:
-            await self.reasoner.load(device=self.gpu.device)
-
-        self.gpu.log_gpu_info()
-
-    async def _load_generation_models(self) -> None:
-        """Load Phase 3 (generation) models, offloading Phase 2."""
-        logger.info("loading_generation_phase")
-
-        # Offload reasoning model
-        self.reasoner.offload_to_cpu()
-        self.gpu._cleanup_gpu()
-
-        # Load TTS models
-        if not self.tts.is_loaded:
-            await self.tts.load(device=self.gpu.device)
-        if not self.vocoder.is_loaded:
-            await self.vocoder.load(device=self.gpu.device)
-
-        self.gpu.log_gpu_info()
+    async def shutdown(self) -> None:
+        """Release everything."""
+        logger.info("shutting_down_pipeline")
+        self.gpu.shutdown()
+        logger.info("pipeline_shutdown_complete")
 
     async def process_audio(
         self,
@@ -160,32 +137,12 @@ class AudioPipeline:
         session: SessionState,
         source_sample_rate: int = 16000,
     ) -> Dict[str, Any]:
-        """
-        Process audio through the full pipeline.
-
-        This is the main entry point for audio processing.
-
-        Args:
-            audio_bytes: Raw PCM audio bytes (int16, mono).
-            session: WebSocket session state.
-            source_sample_rate: Sample rate of input audio.
-
-        Returns:
-            Dict with:
-                - 'transcription': What the user said
-                - 'emotion': Detected emotion
-                - 'response_text': Generated response
-                - 'response_audio': Synthesized speech bytes
-                - 'response_sample_rate': Output sample rate
-                - 'metadata': Processing metadata
-        """
         if not self._is_initialized:
             raise RuntimeError("Pipeline not initialized.")
 
         start_time = time.time()
-        result = {
+        result: Dict[str, Any] = {
             "transcription": "",
-            "emotion": "neutral",
             "response_text": "",
             "response_audio": b"",
             "response_sample_rate": 22050,
@@ -194,168 +151,97 @@ class AudioPipeline:
 
         try:
             # ============================================
-            # STEP 1: Audio Preprocessing
+            # STEP 1: Preprocessing (VAD + DeepFilterNet)
             # ============================================
             waveform, sr = bytes_to_waveform(audio_bytes, source_sample_rate)
 
-            # Voice Activity Detection
             if not self.vad.is_speech(waveform):
                 result["metadata"]["skipped"] = "no_speech_detected"
                 return result
 
-            # Extract speech segments
-            speech_waveform, segments = self.vad.extract_speech(waveform)
-            if speech_waveform.shape[1] < sr * 0.3:  # Less than 300ms
+            speech_waveform, _ = self.vad.extract_speech(waveform)
+            if speech_waveform.shape[1] < sr * 0.3:
                 result["metadata"]["skipped"] = "speech_too_short"
                 return result
 
-            # Noise suppression
             clean_waveform = self.noise_suppressor.suppress_noise(speech_waveform)
-            clean_waveform = normalize_waveform(clean_waveform)
-
-            preprocess_time = time.time() - start_time
+            clean_waveform = normalize_waveform(clean_waveform, target_db=self.settings.agc_target_db)
 
             # ============================================
-            # STEP 2: Understanding (Phase 1 models)
+            # STEP 2: Concurrent ASR and Emotion/Speaker
             # ============================================
-            step2_start = time.time()
-            await self._load_understanding_models()
+            # Execute Whisper and SenseVoice concurrently using asyncio
+            asr_task = asyncio.create_task(self.asr.transcribe(clean_waveform, sr))
+            emotion_task = asyncio.create_task(self.emotion_analyzer.analyze(clean_waveform, sr))
+            speaker_task = asyncio.create_task(self.speaker_encoder.get_embedding(clean_waveform, sr))
 
-            # Acoustic encoding
-            acoustic_result = self.xlsr_encoder.encode(clean_waveform, sr)
+            asr_res, emotion_res, speaker_emb = await asyncio.gather(asr_task, emotion_task, speaker_task)
 
-            # Semantic understanding
-            semantic_result = self.qwen_audio.analyze_intent(clean_waveform, sr)
-
-            # Emotion analysis
-            emotion_result = self.emotion_analyzer.analyze_emotion(clean_waveform, sr)
-
-            # Speaker embedding
-            speaker_emb = self.speaker_encoder.extract_speaker_embedding(clean_waveform, sr)
-
-            understanding_time = time.time() - step2_start
-
-            # Extract results
-            transcription = semantic_result.get("transcription", "")
-            detected_emotion = emotion_result.get("emotion", "neutral")
-            detected_language = semantic_result.get("language", "english")
-            detected_intent = semantic_result.get("intent", "unknown")
-
+            transcription = asr_res.get("text", "")
             result["transcription"] = transcription
-            result["emotion"] = detected_emotion
 
             # ============================================
-            # STEP 3: Memory Update
+            # STEP 3: Enriched Prompt Assembly (Pre-LLM)
             # ============================================
-            self.conversation_memory.add_turn(
-                session_id=session.session_id,
-                role="user",
-                content=transcription,
-                emotion=detected_emotion,
-                language=detected_language,
-            )
-            session.add_to_history("user", transcription, {
-                "emotion": detected_emotion,
-                "language": detected_language,
-            })
+            conversation_history = self.memory.get_conversation_context(session.session_id)
 
             # ============================================
-            # STEP 4: Reasoning (Phase 2 model)
+            # STEP 4: LLM Response
             # ============================================
-            step4_start = time.time()
-            await self._load_reasoning_model()
-
-            conversation_context = self.conversation_memory.get_conversation_context(
-                session.session_id
-            )
-
-            llm_result = self.reasoner.generate_response(
+            llm_result = await asyncio.to_thread(
+                self.reasoner.generate_response,
                 user_message=transcription,
-                conversation_history=conversation_context,
-                emotion_context=emotion_result,
+                conversation_history=conversation_history,
+                emotion_context=emotion_res,
+                system_prompt="You are a helpful voice assistant. Keep answers very brief.",
+                max_new_tokens=150,
             )
+            response_text = llm_result.get("response", "I'm sorry, I couldn't process that.")
 
-            response_text = llm_result.get("response", "I'm sorry, I didn't understand that.")
-            result["response_text"] = response_text
+            # Extract any inline tags (e.g. [TONE: empathetic])
+            style_tags = []
+            tag_pattern = re.compile(r"\[(.*?)\]")
+            tags = tag_pattern.findall(response_text)
+            style_tags.extend(tags)
+            clean_response_text = tag_pattern.sub("", response_text).strip()
 
-            reasoning_time = time.time() - step4_start
-
-            # ============================================
-            # STEP 5: Response Planning
-            # ============================================
-            response_plan = self.response_planner.plan(
-                response_text=response_text,
-                user_emotion=detected_emotion,
-                user_intent=detected_intent,
-                detected_language=detected_language,
-                conversation_context=conversation_context,
-            )
-
-            # ============================================
-            # STEP 6: Speech Generation (Phase 3 models)
-            # ============================================
-            step6_start = time.time()
-            await self._load_generation_models()
-
-            tts_waveform, tts_sr = self.tts.synthesize(
-                text=response_text,
-                language=detected_language,
-                emotion=response_plan.emotion,
-                speaking_rate=response_plan.speaking_rate,
-            )
-
-            # Enhance with vocoder post-processing
-            if self.vocoder.is_loaded:
-                tts_waveform = self.vocoder.enhance_waveform(tts_waveform, tts_sr)
-
-            generation_time = time.time() - step6_start
-
-            # Convert to bytes
-            result["response_audio"] = waveform_to_bytes(tts_waveform, dtype="int16")
-            result["response_sample_rate"] = tts_sr
-
-            # ============================================
-            # STEP 7: Memory Update (assistant turn)
-            # ============================================
-            self.conversation_memory.add_turn(
-                session_id=session.session_id,
-                role="assistant",
-                content=response_text,
-            )
-            session.add_to_history("assistant", response_text)
-
-            # Persist to long-term memory
-            session_mem = self.conversation_memory.get_session(session.session_id)
-            if session_mem:
-                await self.long_term_memory.save_conversation(
+            result["response_text"] = clean_response_text
+            
+            # Save turn to memory
+            self.memory.add_turn(session.session_id, "user", transcription, emotion=emotion_res.get("emotion"))
+            self.memory.add_turn(session.session_id, "assistant", clean_response_text)
+            
+            # Save to long-term memory (async, don't await)
+            asyncio.create_task(
+                self.long_term_memory.save_conversation(
                     session_id=session.session_id,
                     user_id=session.user_id,
-                    turns=[t.model_dump() for t in session_mem.turns],
+                    turns=self.memory.get_session(session.session_id).turns if self.memory.get_session(session.session_id) else [],
+                    summary=None,
+                    metadata={"emotion": emotion_res.get("emotion"), "language": asr_res.get("language")},
                 )
-
-            # ============================================
-            # Timing metadata
-            # ============================================
-            total_time = time.time() - start_time
-            result["metadata"] = {
-                "preprocess_ms": round(preprocess_time * 1000),
-                "understanding_ms": round(understanding_time * 1000),
-                "reasoning_ms": round(reasoning_time * 1000),
-                "generation_ms": round(generation_time * 1000),
-                "total_ms": round(total_time * 1000),
-                "language": detected_language,
-                "intent": detected_intent,
-                "emotion": detected_emotion,
-                "response_plan": response_plan.to_dict(),
-            }
-
-            logger.info(
-                "pipeline_complete",
-                session=session.session_id,
-                total_ms=result["metadata"]["total_ms"],
-                emotion=detected_emotion,
-                language=detected_language,
             )
+            
+            # ============================================
+            # STEP 5: TTS Synthesis (Zero-Shot Cloning)
+            # ============================================
+            language = asr_res.get("language", "english")
+            emotion = emotion_res.get("emotion", "neutral")
+            
+            tts_waveform, tts_sr = await asyncio.to_thread(
+                self.tts.synthesize,
+                text=clean_response_text,
+                language=language,
+                speaker_embedding=speaker_emb if speaker_emb is not None and speaker_emb.sum() != 0 else None,
+                emotion=emotion,
+            )
+
+            result["response_audio"] = waveform_to_bytes(tts_waveform, dtype="int16")
+            result["response_sample_rate"] = tts_sr
+            result["metadata"]["total_ms"] = round((time.time() - start_time) * 1000)
+            result["metadata"]["style_tags"] = style_tags
+            result["metadata"]["emotion"] = emotion_res.get("emotion", "neutral")
+            result["metadata"]["language"] = asr_res.get("language", "english")
 
             return result
 
@@ -369,62 +255,54 @@ class AudioPipeline:
             result["metadata"]["error"] = str(e)
             return result
 
-    async def process_text(
-        self,
-        text: str,
-        session: SessionState,
-    ) -> Dict[str, Any]:
-        """
-        Process text input (for chat mode, bypassing audio layers).
+    async def process_text(self, text: str, session: SessionState, use_rag: bool = True) -> Dict[str, Any]:
+        """Process a text message (chat mode)."""
+        if not self._is_initialized:
+            raise RuntimeError("Pipeline not initialized.")
 
-        Args:
-            text: User's text message.
-            session: Session state.
-
-        Returns:
-            Dict with response_text and optionally response_audio.
-        """
         start_time = time.time()
-
-        # Memory update
-        self.conversation_memory.add_turn(
-            session_id=session.session_id,
-            role="user",
-            content=text,
-        )
-
-        # Load reasoning
-        await self._load_reasoning_model()
-
-        conversation_context = self.conversation_memory.get_conversation_context(
-            session.session_id
-        )
-
-        llm_result = self.reasoner.generate_response(
-            user_message=text,
-            conversation_history=conversation_context,
-        )
-
-        response_text = llm_result.get("response", "I'm sorry, could you rephrase that?")
-
-        # Memory update
-        self.conversation_memory.add_turn(
-            session_id=session.session_id,
-            role="assistant",
-            content=response_text,
-        )
-
-        return {
-            "response_text": response_text,
-            "metadata": {
-                "total_ms": round((time.time() - start_time) * 1000),
-                "tokens_generated": llm_result.get("tokens_generated", 0),
-            },
+        result: Dict[str, Any] = {
+            "response_text": "",
+            "metadata": {},
         }
 
-    async def shutdown(self) -> None:
-        """Clean shutdown of all models."""
-        logger.info("shutting_down_pipeline")
-        await self.long_term_memory.disconnect()
-        self.gpu._cleanup_gpu()
-        logger.info("pipeline_shutdown_complete")
+        try:
+            conversation_history = self.memory.get_conversation_context(session.session_id)
+            
+            llm_result = await asyncio.to_thread(
+                self.reasoner.generate_response,
+                user_message=text,
+                conversation_history=conversation_history,
+                emotion_context={"emotion": "neutral", "energy": "medium", "pace": "moderate"},
+                system_prompt="You are a helpful voice assistant. Keep answers concise and conversational.",
+                max_new_tokens=self.settings.max_new_tokens,
+            )
+            response_text = llm_result.get("response", "I'm sorry, I couldn't process that.")
+
+            # Extract any inline tags
+            style_tags = []
+            tag_pattern = re.compile(r"\[(.*?)\]")
+            tags = tag_pattern.findall(response_text)
+            style_tags.extend(tags)
+            clean_response_text = tag_pattern.sub("", response_text).strip()
+
+            result["response_text"] = clean_response_text
+            
+            # Save turn to memory
+            self.memory.add_turn(session.session_id, "user", text, emotion="neutral")
+            self.memory.add_turn(session.session_id, "assistant", clean_response_text)
+
+            result["metadata"]["total_ms"] = round((time.time() - start_time) * 1000)
+            result["metadata"]["style_tags"] = style_tags
+
+            return result
+
+        except Exception as e:
+            logger.error(
+                "pipeline_text_error",
+                session=session.session_id,
+                error=str(e),
+                elapsed_ms=round((time.time() - start_time) * 1000),
+            )
+            result["metadata"]["error"] = str(e)
+            return result

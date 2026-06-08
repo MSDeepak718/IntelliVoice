@@ -44,35 +44,39 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://intellivoice:intellivoice@localhost:27017"
     mongodb_db_name: str = "intellivoice"
 
+
     # ---------- HuggingFace ----------
     hf_token: str = ""
     hf_home: str = "./models"
 
     # ---------- GPU ----------
     cuda_visible_devices: str = "0"
-    gpu_memory_fraction: float = 0.95
+    gpu_memory_fraction: float = 0.92
 
-    # ---------- Model Paths ----------
+    # ---------- Model Paths (auto-downloaded if empty) ----------
     silero_vad_model_path: str = ""
     deepfilternet_model_path: str = ""
-    xlsr_model_path: str = ""
-    qwen_audio_model_path: str = ""
-    emotion2vec_model_path: str = ""
-    wavlm_model_path: str = ""
-    qwen3_model_path: str = ""
-    cosyvoice_model_path: str = ""
-    hifigan_model_path: str = ""
+    whisper_model_path: str = ""
+    sensevoice_model_path: str = ""
+    ecapa_tdnn_model_path: str = ""
+    qwen3_8b_model_path: str = ""
+    cosyvoice2_model_path: str = ""
 
     # ---------- Audio ----------
     sample_rate: int = 16000
     chunk_size_ms: int = 30
-    vad_threshold: float = 0.5
+    vad_threshold: float = 0.35
+    vad_min_speech_ms: int = 80
+    vad_min_silence_ms: int = 300
+    vad_speech_pad_ms: int = 120
+    agc_target_db: float = -20.0
     max_audio_length_s: int = 30
 
     # ---------- LLM ----------
     max_new_tokens: int = 512
     temperature: float = 0.7
     top_p: float = 0.9
+
 
     @property
     def project_root(self) -> Path:

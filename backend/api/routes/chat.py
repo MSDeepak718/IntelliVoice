@@ -6,6 +6,7 @@ REST endpoint for text-based chat (non-streaming).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Optional
 
@@ -20,6 +21,7 @@ router = APIRouter()
 
 # Reuse session manager for REST sessions
 _rest_sessions: dict = {}
+_rest_sessions_lock = asyncio.Lock()
 
 
 class ChatRequest(BaseModel):
@@ -50,15 +52,16 @@ async def chat(request: Request, body: ChatRequest):
     # Get or create session
     session_id = body.session_id or f"rest_{int(time.time())}"
 
-    if session_id not in _rest_sessions:
-        # Create a mock session state for REST usage
-        _rest_sessions[session_id] = SessionState(
-            session_id=session_id,
-            websocket=None,  # No WebSocket for REST
-        )
-        pipeline.conversation_memory.create_session(session_id)
+    async with _rest_sessions_lock:
+        if session_id not in _rest_sessions:
+            # Create a session state for REST usage
+            _rest_sessions[session_id] = SessionState(
+                session_id=session_id,
+                websocket=None,
+            )
+            pipeline.conversation_memory.create_session(session_id)
 
-    session = _rest_sessions[session_id]
+        session = _rest_sessions[session_id]
 
     try:
         result = await pipeline.process_text(
@@ -85,8 +88,9 @@ async def delete_session(request: Request, session_id: str):
     """Delete a chat session."""
     pipeline = request.app.state.pipeline
 
-    if session_id in _rest_sessions:
-        del _rest_sessions[session_id]
+    async with _rest_sessions_lock:
+        if session_id in _rest_sessions:
+            del _rest_sessions[session_id]
     pipeline.conversation_memory.remove_session(session_id)
 
     return {"status": "deleted", "session_id": session_id}

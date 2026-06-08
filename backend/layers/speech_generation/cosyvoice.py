@@ -7,17 +7,14 @@ multilingual speech. Supports streaming generation and voice cloning.
 
 from __future__ import annotations
 
-import io
 import tempfile
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Optional, Tuple
 
 import torch
 import torchaudio
-import numpy as np
 
 from config.logging_config import get_logger
 from config.model_registry import ModelRegistry
-from backend.layers.response_planning.planner import ResponsePlan
 
 logger = get_logger("cosyvoice")
 
@@ -42,6 +39,11 @@ class CosyVoiceSynthesizer:
         self._is_loaded = False
         self._config = ModelRegistry.COSYVOICE2
         self._sample_rate = 22050  # CosyVoice 2 default output rate
+        self._speaker_embedding: Optional[torch.Tensor] = None
+
+    def set_speaker_embedding(self, embedding: Optional[torch.Tensor]) -> None:
+        """Cache the user's speaker embedding for personalised synthesis."""
+        self._speaker_embedding = embedding
 
     async def load(self, device: torch.device = torch.device("cuda")) -> None:
         """Load CosyVoice 2 model."""
@@ -124,32 +126,27 @@ class CosyVoiceSynthesizer:
                     stream=False,
                 )
                 if isinstance(output, dict):
-                    waveform = output.get("tts_speech", torch.zeros(1, 16000))
+                    waveform = output.get("tts_speech")
+                    if waveform is None:
+                        raise RuntimeError("inference_sft returned None waveform")
                 else:
                     # Generator output
                     chunks = list(output)
                     if chunks:
                         waveform = torch.cat([c["tts_speech"] for c in chunks], dim=-1)
                     else:
-                        waveform = torch.zeros(1, 16000)
+                        raise RuntimeError("inference_sft returned empty generator")
 
                 if waveform.dim() == 1:
                     waveform = waveform.unsqueeze(0)
 
                 return waveform, self._sample_rate
 
-            # Fallback: basic generation
-            if hasattr(self.model, "generate"):
-                waveform = self._generate_fallback(text, language)
-                return waveform, self._sample_rate
-
-            raise RuntimeError("No compatible synthesis method found")
+            raise RuntimeError("No compatible synthesis method found in loaded model")
 
         except Exception as e:
             logger.error("synthesis_failed", error=str(e), text_length=len(text))
-            # Return silence as fallback
-            silence = torch.zeros(1, self._sample_rate * 2)  # 2 seconds of silence
-            return silence, self._sample_rate
+            raise
 
     @torch.inference_mode()
     async def synthesize_streaming(
@@ -248,14 +245,6 @@ class CosyVoiceSynthesizer:
         except Exception as e:
             logger.error("voice_cloning_failed", error=str(e))
             return self.synthesize(text)
-
-    def _generate_fallback(self, text: str, language: str) -> torch.Tensor:
-        """Fallback generation using basic model interface."""
-        # Generate a simple sine-wave placeholder
-        duration_s = max(1.0, len(text.split()) * 0.3)
-        t = torch.linspace(0, duration_s, int(self._sample_rate * duration_s))
-        waveform = 0.3 * torch.sin(2 * 3.14159 * 440 * t)
-        return waveform.unsqueeze(0)
 
     def offload_to_cpu(self) -> None:
         """Offload to CPU."""

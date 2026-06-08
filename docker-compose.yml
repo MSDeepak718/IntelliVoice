@@ -1,4 +1,3 @@
-version: "3.9"
 
 services:
   # ---------- MongoDB ----------
@@ -34,6 +33,8 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+
+
 
 volumes:
   mongo-data:

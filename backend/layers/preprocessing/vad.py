@@ -118,11 +118,13 @@ class SileroVAD:
         if waveform.dim() > 1:
             waveform = waveform.squeeze(0)
 
-        # Use the model's __call__ for single-chunk detection
-        with torch.no_grad():
-            speech_prob = self.model(waveform, self.sample_rate).item()
-
-        return speech_prob >= self.threshold
+        # Use detect_speech which safely handles arbitrary waveform lengths
+        try:
+            segments = self.detect_speech(waveform, return_seconds=False)
+            return len(segments) > 0
+        except Exception as e:
+            logger.error("vad_is_speech_error", error=str(e))
+            return False
 
     def get_speech_probability(self, waveform: torch.Tensor) -> float:
         """Get speech probability for a chunk."""
