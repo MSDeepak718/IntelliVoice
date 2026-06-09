@@ -208,7 +208,7 @@ async def audio_websocket(websocket: WebSocket):
                         # Reset session
                         session.reset_audio_buffer()
                         session.conversation_history.clear()
-                        pipeline.conversation_memory.remove_session(session.session_id)
+                        pipeline.memory.remove_session(session.session_id)
                         await websocket.send_json({
                             "type": "reset",
                             "status": "ok",

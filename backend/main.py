@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     pipeline = AudioPipeline(gpu_manager=gpu_manager)
     app.state.pipeline = pipeline
 
-    # Load always-on models (VAD, DeepFilterNet)
+    # Load all pipeline models (VAD, noisereduce, ASR, LLM, TTS)
     await pipeline.initialize()
 
     logger.info("intellivoice_ready", port=settings.port)

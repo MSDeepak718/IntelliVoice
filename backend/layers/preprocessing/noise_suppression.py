@@ -4,12 +4,14 @@ IntelliVoice — Noise Suppression
 Layer 1 component: removes background noise from audio for improved
 downstream model performance.
 
-Primary backend: DeepFilterNet (the `df` Python package).
-Fallback backend : lightweight spectral-subtraction denoiser (pure
-                    numpy/scipy) that gives reasonable cleanup when
-                    DeepFilterNet isn't installed. The behaviour is
-                    transparent to callers — `suppress_noise(...)` always
-                    returns a denoised waveform of the same shape.
+Primary backend : noisereduce — a lightweight, high-quality spectral
+                  gating library with both stationary and non-stationary
+                  noise reduction. No GPU required, <10ms per chunk.
+Fallback backend: lightweight spectral-subtraction denoiser (pure
+                  numpy/scipy) that gives reasonable cleanup when
+                  noisereduce isn't installed. The behaviour is
+                  transparent to callers — `suppress_noise(...)` always
+                  returns a denoised waveform of the same shape.
 """
 
 from __future__ import annotations
@@ -103,7 +105,7 @@ class NoiseSuppressor:
     """
     Noise suppression with three-tier backend:
 
-        1. DeepFilterNet (`from df.enhance import ...`) — best quality.
+        1. noisereduce (spectral gating, non-stationary) — best quality.
         2. Spectral subtraction (numpy, no extra deps) — solid fallback.
         3. Passthrough — last resort, no processing.
 
@@ -113,9 +115,7 @@ class NoiseSuppressor:
 
     def __init__(self, sample_rate: int = 16000):
         self.sample_rate = sample_rate
-        self._df_model = None
-        self._df_state = None
-        self._enhance_fn = None
+        self._nr_reduce = None  # noisereduce module reference
         self._is_loaded = False
         self.backend: str = "passthrough"
 
@@ -124,27 +124,30 @@ class NoiseSuppressor:
         if self._is_loaded:
             return
 
-        logger.info("loading_noise_suppressor", preferred="deepfilternet")
+        logger.info("loading_noise_suppressor", preferred="noisereduce")
 
-        # ---- Tier 1: DeepFilterNet ------------------------------------
+        # ---- Tier 1: noisereduce ----------------------------------
         try:
-            from df.enhance import enhance, init_df
+            import noisereduce as nr
 
-            self._df_model, self._df_state, _ = init_df()
-            self._enhance_fn = enhance
+            # Sanity-check: run on a 1-second dummy to confirm it works
+            dummy = np.zeros(self.sample_rate, dtype=np.float32)
+            nr.reduce_noise(y=dummy, sr=self.sample_rate, stationary=False)
+
+            self._nr_reduce = nr
             self._is_loaded = True
-            self.backend = "deepfilternet"
-            logger.info("deepfilternet_loaded")
+            self.backend = "noisereduce"
+            logger.info("noisereduce_loaded")
             return
         except ImportError:
             logger.warning(
-                "deepfilternet_not_available",
-                hint="Install with: pip install deepfilternet",
+                "noisereduce_not_available",
+                hint="Install with: pip install noisereduce",
             )
         except Exception as e:  # noqa: BLE001
-            logger.error("deepfilternet_load_failed", error=str(e))
+            logger.error("noisereduce_load_failed", error=str(e))
 
-        # ---- Tier 2: spectral subtraction -----------------------------
+        # ---- Tier 2: spectral subtraction -------------------------
         try:
             # Sanity-check the implementation on a 1-second dummy signal
             _spectral_subtract(
@@ -164,14 +167,22 @@ class NoiseSuppressor:
                 error=str(e),
             )
 
-        # ---- Tier 3: passthrough --------------------------------------
+        # ---- Tier 3: passthrough ----------------------------------
         self._is_loaded = False
         self.backend = "passthrough"
         logger.warning("noise_suppressor_passthrough", reason="no_backend_available")
 
-    def _suppress_deepfilter(self, audio_np: np.ndarray) -> np.ndarray:
-        out = self._enhance_fn(self._df_model, self._df_state, audio_np)
-        return np.asarray(out, dtype=np.float32)
+    def _suppress_noisereduce(self, audio_np: np.ndarray) -> np.ndarray:
+        """Apply noisereduce non-stationary spectral gating."""
+        enhanced = self._nr_reduce.reduce_noise(
+            y=audio_np,
+            sr=self.sample_rate,
+            stationary=False,
+            prop_decrease=0.8,
+            n_fft=512,
+            hop_length=128,
+        )
+        return np.asarray(enhanced, dtype=np.float32)
 
     def suppress_noise(self, waveform: torch.Tensor) -> torch.Tensor:
         """
@@ -195,8 +206,8 @@ class NoiseSuppressor:
                 audio_np = waveform.cpu().numpy()
             audio_np = np.asarray(audio_np, dtype=np.float32)
 
-            if self.backend == "deepfilternet":
-                enhanced = self._suppress_deepfilter(audio_np)
+            if self.backend == "noisereduce":
+                enhanced = self._suppress_noisereduce(audio_np)
             elif self.backend == "spectral_subtraction":
                 enhanced = _spectral_subtract(audio_np, self.sample_rate)
             else:

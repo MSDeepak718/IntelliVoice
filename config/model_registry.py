@@ -5,10 +5,10 @@ Defines all model configurations, HuggingFace IDs, VRAM budgets,
 and loading parameters for every layer in the pipeline.
 
 Stack (target: RTX 4080 16GB VRAM, 64 GB RAM):
-    1. Preprocessing: Silero VAD + DeepFilterNet (CPU / FP32)
+    1. Preprocessing: Silero VAD + noisereduce (CPU / FP32)
     2A. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
     2B. Emotion/Speaker: SenseVoice-Small + ECAPA-TDNN (FP16)
-    3. Memory: LangGraph + MongoDB (CPU only)
+    3. Memory: Conversation Memory + MongoDB (CPU only)
     4. Core Reasoning: Qwen3 14B (INT4 NF4 double quant)
     5. TTS Synthesis: CosyVoice 2 (FP16)
 """
@@ -30,6 +30,7 @@ class ModelPrecision(str, Enum):
 
 class LoadingOrder(int, Enum):
     """Enforced specific loading order at startup."""
+
     PREPROCESSING = 1
     ASR = 2
     EMOTION_SPEAKER = 3
@@ -40,6 +41,7 @@ class LoadingOrder(int, Enum):
 @dataclass
 class ModelConfig:
     """Configuration for a single model."""
+
     name: str
     hf_model_id: str
     precision: ModelPrecision = ModelPrecision.FP16
@@ -70,16 +72,18 @@ class ModelRegistry:
         order=LoadingOrder.PREPROCESSING,
         torch_dtype="float32",
         download_via_hf=False,
+        notes="Loaded via torch.hub, runs on CPU",
     )
 
-    DEEPFILTERNET = ModelConfig(
-        name="deepfilternet",
-        hf_model_id="deepfilternet/DeepFilterNet3",
+    NOISEREDUCE = ModelConfig(
+        name="noisereduce",
+        hf_model_id="n/a",
         precision=ModelPrecision.FP32,
-        estimated_vram_mb=100,
+        estimated_vram_mb=0,
         order=LoadingOrder.PREPROCESSING,
         torch_dtype="float32",
         download_via_hf=False,
+        notes="Spectral gating via noisereduce pip package, CPU only",
     )
 
     WHISPER = ModelConfig(
@@ -140,7 +144,7 @@ class ModelRegistry:
         """Return all model configs."""
         return [
             cls.SILERO_VAD,
-            cls.DEEPFILTERNET,
+            cls.NOISEREDUCE,
             cls.WHISPER,
             cls.SENSEVOICE,
             cls.ECAPA_TDNN,
@@ -154,8 +158,10 @@ class ModelRegistry:
         print("\n=== VRAM Budget (RTX 4080 16GB target) ===\n")
         total_mb = 0
         for m in cls.get_all_models():
-            print(f"  {m.name:<18} {m.estimated_vram_mb:>6} MB  ({m.vram_gb:.2f} GB)  {m.precision.value}")
+            print(
+                f"  {m.name:<18} {m.estimated_vram_mb:>6} MB  ({m.vram_gb:.2f} GB)  {m.precision.value}"
+            )
             total_mb += m.estimated_vram_mb
-        print(f"\n  {'TOTAL':<18} {total_mb:>6} MB  ({total_mb/1024:.2f} GB)")
-        print(f"  {'HEADROOM':<18} {16384 - total_mb:>6} MB  ({(16384 - total_mb)/1024:.2f} GB)")
+        print(f"\n  {'TOTAL':<18} {total_mb:>6} MB  ({total_mb / 1024:.2f} GB)")
+        print(f"  {'HEADROOM':<18} {16384 - total_mb:>6} MB  ({(16384 - total_mb) / 1024:.2f} GB)")
         print("==========================================\n")

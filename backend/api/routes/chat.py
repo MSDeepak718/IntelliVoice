@@ -59,7 +59,7 @@ async def chat(request: Request, body: ChatRequest):
                 session_id=session_id,
                 websocket=None,
             )
-            pipeline.conversation_memory.create_session(session_id)
+            pipeline.memory.create_session(session_id)
 
         session = _rest_sessions[session_id]
 
@@ -91,6 +91,6 @@ async def delete_session(request: Request, session_id: str):
     async with _rest_sessions_lock:
         if session_id in _rest_sessions:
             del _rest_sessions[session_id]
-    pipeline.conversation_memory.remove_session(session_id)
+    pipeline.memory.remove_session(session_id)
 
     return {"status": "deleted", "session_id": session_id}

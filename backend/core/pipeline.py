@@ -5,10 +5,10 @@ The main pipeline that coordinates all layers from audio input
 through speech output. Implements strict specific loading order
 and concurrent layer execution tailored for the RTX 4080 (16GB):
 
-    1. Preprocessing: Silero VAD + DeepFilterNet (CPU / FP32)
+    1. Preprocessing: Silero VAD + noisereduce (CPU / FP32)
     2A. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
     2B. Emotion/Speaker: SenseVoice-Small + ECAPA-TDNN (FP16)
-    3. Memory: LangGraph + MongoDB (CPU only)
+    3. Memory: Conversation Memory + MongoDB (CPU only)
     4. Core Reasoning: Qwen3 14B (INT4 NF4 double quant)
     5. TTS Synthesis: CosyVoice 2 (FP16)
 
@@ -83,7 +83,7 @@ class AudioPipeline:
     async def initialize(self) -> None:
         """
         Load all models at startup. Enforces strict loading order:
-        DeepFilterNet -> Whisper -> SenseVoice + ECAPA -> Qwen3 14B -> CosyVoice 2
+        noisereduce -> Whisper -> SenseVoice + ECAPA -> Qwen3 14B -> CosyVoice 2
         """
         logger.info("initializing_pipeline")
         device = self.gpu.device
@@ -93,7 +93,9 @@ class AudioPipeline:
         await self.vad.load(device=torch.device("cpu"))
         await self.noise_suppressor.load()
         self.gpu.register_model("vad", self.vad.model, LoadingOrder.PREPROCESSING, 50)
-        self.gpu.register_model("noise_suppressor", self.noise_suppressor, LoadingOrder.PREPROCESSING, 100)
+        self.gpu.register_model(
+            "noise_suppressor", self.noise_suppressor, LoadingOrder.PREPROCESSING, 0
+        ) 
 
         # Order 2: ASR
         logger.info("loading_asr_model")
@@ -151,7 +153,7 @@ class AudioPipeline:
 
         try:
             # ============================================
-            # STEP 1: Preprocessing (VAD + DeepFilterNet)
+            # STEP 1: Preprocessing (VAD + noisereduce)
             # ============================================
             waveform, sr = bytes_to_waveform(audio_bytes, source_sample_rate)
 

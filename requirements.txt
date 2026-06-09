@@ -26,8 +26,6 @@ transformers>=4.45.0
 accelerate>=1.0.0
 safetensors>=0.4.0
 bitsandbytes>=0.44.0
-auto-gptq>=0.7.0
-optimum>=1.23.0
 huggingface-hub>=0.25.0
 sentencepiece>=0.2.0
 protobuf>=5.0.0
@@ -35,16 +33,8 @@ protobuf>=5.0.0
 # ---------- Silero VAD ----------
 # Loaded via torch.hub, no separate package needed
 
-# ---------- DeepFilterNet ----------
-deepfilternet>=0.5.0
-
-# ---------- LLM Inference ----------
-vllm>=0.6.0
-
-# ---------- LangGraph / Memory ----------
-langgraph>=0.2.0
-langchain>=0.3.0
-langchain-community>=0.3.0
+# ---------- Noise Suppression ----------
+noisereduce>=3.0.0
 
 # ---------- MongoDB ----------
 pymongo>=4.8.0
