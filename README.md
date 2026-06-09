@@ -22,7 +22,7 @@ Audio Input -> Preprocessing -> ASR + Emotion/Speaker -> Prompt Assembly -> LLM 
 | 3 | Emotion | SenseVoice-Small (FP16) | 0.3 GB |
 | 3 | Speaker Emb. | ECAPA-TDNN (FP16) | 0.1 GB |
 | 4 | Memory | Conversation + MongoDB | CPU |
-| 5 | Reasoning | Qwen3-14B-Instruct (INT4 NF4) | 8.5 GB |
+| 5 | Reasoning | Qwen2.5-3B-Instruct (INT4 NF4) | 3.0 GB |
 | 6 | TTS | CosyVoice 2 (FP16) | 1.5 GB |
 
 ### VRAM Management (16GB target)
@@ -140,7 +140,7 @@ IntelliVoice/
 │   ├── layers/
 │   │   ├── preprocessing/   # VAD, denoising
 │   │   ├── speaker/         # ECAPA-TDNN + SenseVoice
-│   │   ├── reasoning/       # Qwen3-14B
+│   │   ├── reasoning/       # Fast LLM (Qwen2.5-3B)
 │   │   ├── memory/          # conversation, long-term (MongoDB)
 │   │   └── speech_generation/  # CosyVoice 2
 │   └── services/            # model loader, audio streaming
@@ -159,7 +159,7 @@ IntelliVoice/
 - Tamil (தமிழ்)
 - Telugu (తెలుగు)
 - Code-mixed (Hinglish, Tanglish, etc.)
-- 100+ via Qwen2-Audio ASR, Qwen3 reasoning, CosyVoice 2 TTS
+- 100+ via Qwen2-Audio ASR, Fast LLM reasoning, CosyVoice 2 TTS
 
 ---
 

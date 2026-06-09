@@ -103,10 +103,22 @@ class LongTermMemory:
         if not self._is_connected:
             return
 
+        # Serialize turns
+        serialized_turns = []
+        for t in turns:
+            if hasattr(t, "model_dump"):
+                serialized_turns.append(t.model_dump())
+            elif hasattr(t, "dict"):
+                serialized_turns.append(t.dict())
+            elif hasattr(t, "__dict__"):
+                serialized_turns.append(t.__dict__)
+            else:
+                serialized_turns.append(t)
+
         doc = {
             "session_id": session_id,
             "user_id": user_id,
-            "turns": turns,
+            "turns": serialized_turns,
             "summary": summary,
             "metadata": metadata or {},
             "created_at": time.time(),

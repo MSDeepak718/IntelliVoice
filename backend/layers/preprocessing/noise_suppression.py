@@ -173,12 +173,12 @@ class NoiseSuppressor:
         logger.warning("noise_suppressor_passthrough", reason="no_backend_available")
 
     def _suppress_noisereduce(self, audio_np: np.ndarray) -> np.ndarray:
-        """Apply noisereduce non-stationary spectral gating."""
+        """Apply noisereduce spectral gating."""
         enhanced = self._nr_reduce.reduce_noise(
             y=audio_np,
             sr=self.sample_rate,
-            stationary=False,
-            prop_decrease=0.8,
+            stationary=True,
+            prop_decrease=0.5,
             n_fft=512,
             hop_length=128,
         )

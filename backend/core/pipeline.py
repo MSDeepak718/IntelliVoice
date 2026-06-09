@@ -7,12 +7,12 @@ and concurrent layer execution tailored for the RTX 4080 (16GB):
 
     1. Preprocessing: Silero VAD + noisereduce (CPU / FP32)
     2A. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
-    2B. Emotion/Speaker: SenseVoice-Small + ECAPA-TDNN (FP16)
+    2B. Emotion/Speaker: superb/wav2vec2-base-superb-er + ECAPA-TDNN (FP16)
     3. Memory: Conversation Memory + MongoDB (CPU only)
-    4. Core Reasoning: Qwen3 14B (INT4 NF4 double quant)
+    4. Core Reasoning: Qwen2.5 3B (INT4 NF4 double quant)
     5. TTS Synthesis: CosyVoice 2 (FP16)
 
-All models are loaded at startup. Whisper and SenseVoice execute concurrently.
+All models are loaded at startup. Whisper and Emotion execute concurrently.
 LLM output streams inline style tags directly to TTS model sentence-by-sentence.
 """
 
@@ -45,11 +45,11 @@ logger = get_logger("pipeline")
 
 from backend.layers.memory.conversation_memory import ConversationMemory
 from backend.layers.memory.long_term_memory import LongTermMemory
-from backend.layers.reasoning.qwen3_reasoning import Qwen3Reasoner
-from backend.layers.speech_generation.cosyvoice import CosyVoiceSynthesizer
+from backend.layers.reasoning.fast_reasoning import FastReasoner
+from backend.layers.speech_generation.piper_tts import PiperSynthesizer
 
 from backend.layers.asr.whisper_asr import WhisperASR
-from backend.layers.speaker.sensevoice import SenseVoiceAnalyzer
+from backend.layers.speaker.emotion import EmotionAnalyzer
 from backend.layers.speaker.ecapa import EcapaSpeaker
 
 
@@ -67,7 +67,7 @@ class AudioPipeline:
 
         # 2. ASR & Emotion/Speaker (FP16)
         self.asr = WhisperASR()
-        self.emotion_analyzer = SenseVoiceAnalyzer()
+        self.emotion_analyzer = EmotionAnalyzer()
         self.speaker_encoder = EcapaSpeaker()
 
         # 3. Memory (LangGraph + MongoDB)
@@ -75,15 +75,15 @@ class AudioPipeline:
         self.long_term_memory = LongTermMemory()
 
         # 4 & 5. Core Reasoning & TTS
-        self.reasoner = Qwen3Reasoner()
-        self.tts = CosyVoiceSynthesizer()
+        self.reasoner = FastReasoner()
+        self.tts = PiperSynthesizer()
 
         self._is_initialized = False
 
     async def initialize(self) -> None:
         """
         Load all models at startup. Enforces strict loading order:
-        noisereduce -> Whisper -> SenseVoice + ECAPA -> Qwen3 14B -> CosyVoice 2
+        noisereduce -> Whisper -> Emotion + ECAPA -> Qwen2.5 3B -> XTTS-v2
         """
         logger.info("initializing_pipeline")
         device = self.gpu.device
@@ -106,7 +106,7 @@ class AudioPipeline:
         logger.info("loading_emotion_and_speaker_models")
         await self.emotion_analyzer.load(device=device)
         await self.speaker_encoder.load(device=device)
-        self.gpu.register_model("emotion_analyzer", self.emotion_analyzer.model, LoadingOrder.EMOTION_SPEAKER, 300)
+        self.gpu.register_model("emotion_analyzer", self.emotion_analyzer.model, LoadingOrder.EMOTION_SPEAKER, 350)
         self.gpu.register_model("speaker_encoder", self.speaker_encoder.model, LoadingOrder.EMOTION_SPEAKER, 100)
 
         # Order 4: Core Reasoning (LLM)
@@ -115,9 +115,9 @@ class AudioPipeline:
         self.gpu.register_model("reasoner", self.reasoner.model, LoadingOrder.REASONING, 8500)
 
         # Order 5: TTS Synthesis
-        logger.info("loading_tts_model")
+        logger.info("loading_piper_tts")
         await self.tts.load(device=device)
-        self.gpu.register_model("tts", self.tts.model, LoadingOrder.TTS, 1500)
+        self.gpu.register_model("tts", self.tts.model, LoadingOrder.TTS, 500)
 
         # Memory systems (CPU only)
         await self.memory.initialize()
@@ -132,6 +132,11 @@ class AudioPipeline:
         logger.info("shutting_down_pipeline")
         self.gpu.shutdown()
         logger.info("pipeline_shutdown_complete")
+
+    def cancel_processing(self) -> None:
+        """Abort any ongoing LLM generation or processing tasks."""
+        if self._is_initialized and hasattr(self.reasoner, 'cancel_generation'):
+            self.reasoner.cancel_generation()
 
     async def process_audio(
         self,
@@ -172,7 +177,7 @@ class AudioPipeline:
             # ============================================
             # STEP 2: Concurrent ASR and Emotion/Speaker
             # ============================================
-            # Execute Whisper and SenseVoice concurrently using asyncio
+            # Execute Whisper and Emotion concurrently using asyncio
             asr_task = asyncio.create_task(self.asr.transcribe(clean_waveform, sr))
             emotion_task = asyncio.create_task(self.emotion_analyzer.analyze(clean_waveform, sr))
             speaker_task = asyncio.create_task(self.speaker_encoder.get_embedding(clean_waveform, sr))
@@ -206,6 +211,10 @@ class AudioPipeline:
             tags = tag_pattern.findall(response_text)
             style_tags.extend(tags)
             clean_response_text = tag_pattern.sub("", response_text).strip()
+
+            # Remove <think> blocks generated by reasoning models
+            think_pattern = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+            clean_response_text = think_pattern.sub("", clean_response_text).strip()
 
             result["response_text"] = clean_response_text
             
@@ -256,6 +265,111 @@ class AudioPipeline:
             )
             result["metadata"]["error"] = str(e)
             return result
+
+    async def stream_process_audio(
+        self,
+        audio_bytes: bytes,
+        session: SessionState,
+        source_sample_rate: int = 16000,
+    ):
+        """Streaming version of process_audio that yields dict results one by one."""
+        if not self._is_initialized:
+            raise RuntimeError("Pipeline not initialized.")
+
+        start_time = time.time()
+        try:
+            waveform, sr = bytes_to_waveform(audio_bytes, source_sample_rate)
+
+            if not self.vad.is_speech(waveform):
+                yield {"type": "skip", "reason": "no_speech_detected"}
+                return
+
+            speech_waveform, _ = self.vad.extract_speech(waveform)
+            if speech_waveform.shape[1] < sr * 0.3:
+                yield {"type": "skip", "reason": "speech_too_short"}
+                return
+
+            clean_waveform = self.noise_suppressor.suppress_noise(speech_waveform)
+            clean_waveform = normalize_waveform(clean_waveform, target_db=self.settings.agc_target_db)
+
+            asr_task = asyncio.create_task(self.asr.transcribe(clean_waveform, sr))
+            emotion_task = asyncio.create_task(self.emotion_analyzer.analyze(clean_waveform, sr))
+            speaker_task = asyncio.create_task(self.speaker_encoder.get_embedding(clean_waveform, sr))
+
+            asr_res, emotion_res, speaker_emb = await asyncio.gather(asr_task, emotion_task, speaker_task)
+            transcription = asr_res.get("text", "")
+            
+            # Send transcription as soon as it's ready
+            yield {
+                "type": "transcription", 
+                "text": transcription,
+                "emotion": emotion_res.get("emotion", "neutral"),
+                "language": asr_res.get("language", "unknown")
+            }
+
+            conversation_history = self.memory.get_conversation_context(session.session_id)
+
+            llm_result = await asyncio.to_thread(
+                self.reasoner.generate_response,
+                user_message=transcription,
+                conversation_history=conversation_history,
+                emotion_context=emotion_res,
+                system_prompt="You are a helpful voice assistant engaged in a spoken conversation. Keep answers concise, natural, and conversational. NEVER use emojis, markdown formatting, bullet points, asterisks, or any symbols that cannot be spoken out loud. Write numbers as words if they are complex.",
+                max_new_tokens=150,
+            )
+            response_text = llm_result.get("response", "I'm sorry, I couldn't process that.")
+
+            tag_pattern = re.compile(r"\[(.*?)\]")
+            clean_response_text = tag_pattern.sub("", response_text).strip()
+            think_pattern = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+            clean_response_text = think_pattern.sub("", clean_response_text).strip()
+
+            self.memory.add_turn(session.session_id, "user", transcription, emotion=emotion_res.get("emotion"))
+            self.memory.add_turn(session.session_id, "assistant", clean_response_text)
+            
+            asyncio.create_task(
+                self.long_term_memory.save_conversation(
+                    session_id=session.session_id,
+                    user_id=session.user_id,
+                    turns=self.memory.get_session(session.session_id).turns if self.memory.get_session(session.session_id) else [],
+                    summary=None,
+                    metadata={"emotion": emotion_res.get("emotion"), "language": asr_res.get("language")},
+                )
+            )
+            
+            language = asr_res.get("language", "english")
+            emotion = emotion_res.get("emotion", "neutral")
+            
+            # Synthesize the entire response at once
+            tts_waveform, tts_sr = await asyncio.to_thread(
+                self.tts.synthesize,
+                text=clean_response_text,
+                language=language,
+                speaker_embedding=speaker_emb if speaker_emb is not None and speaker_emb.sum() != 0 else None,
+                emotion=emotion,
+            )
+
+            audio_bytes_out = waveform_to_bytes(tts_waveform, dtype="int16")
+            
+            yield {
+                "type": "response_audio",
+                "text": clean_response_text,
+                "audio_bytes": audio_bytes_out,
+                "sample_rate": tts_sr,
+                "metadata": {"emotion": emotion, "language": language}
+            }
+
+        except asyncio.CancelledError:
+            logger.info("stream_process_audio_cancelled", session=session.session_id)
+            raise
+        except Exception as e:
+            logger.error(
+                "pipeline_stream_error",
+                session=session.session_id,
+                error=str(e),
+                elapsed_ms=round((time.time() - start_time) * 1000),
+            )
+            yield {"type": "error", "message": str(e)}
 
     async def process_text(self, text: str, session: SessionState, use_rag: bool = True) -> Dict[str, Any]:
         """Process a text message (chat mode)."""

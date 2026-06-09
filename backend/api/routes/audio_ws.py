@@ -11,6 +11,7 @@ Protocol:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import time
@@ -100,81 +101,86 @@ async def audio_websocket(websocket: WebSocket):
                             "type": "vad",
                             "status": "speech_start",
                         })
+                        
+                        # Tell frontend to stop playing audio immediately
+                        await websocket.send_json({
+                            "type": "interrupt",
+                            "status": "user_spoke",
+                        })
+                    
+                    # Interruption logic: if assistant is processing in backend, cancel it
+                    if session.is_processing and session.processing_task and not session.processing_task.done():
+                        session.processing_task.cancel()
+                        pipeline.cancel_processing()
+                        session.is_processing = False
+                        
+                    session.silence_start_time = None
                     continue
 
-                # Speech ended — process the buffered audio
-                if session.is_speaking and audio_duration >= 0.5:
-                    session.is_speaking = False
-                    session.is_processing = True
+                # Speech ended — check silence duration
+                if session.is_speaking:
+                    if session.silence_start_time is None:
+                        session.silence_start_time = time.time()
+                        
+                    silence_duration = time.time() - session.silence_start_time
+                    if silence_duration >= 1.2:  # Wait 1.2s to finish completely
+                        session.is_speaking = False
+                        session.is_processing = True
 
-                    await websocket.send_json({
-                        "type": "vad",
-                        "status": "speech_end",
-                        "duration_s": round(audio_duration, 2),
-                    })
-
-                    await websocket.send_json({
-                        "type": "processing",
-                        "status": "started",
-                    })
-
-                    # Process through the full pipeline
-                    try:
-                        result = await pipeline.process_audio(
-                            audio_bytes=bytes(session.audio_buffer),
-                            session=session,
-                            source_sample_rate=settings.sample_rate,
-                        )
-
-                        # Send transcription
-                        if result.get("transcription"):
-                            await websocket.send_json({
-                                "type": "transcription",
-                                "text": result["transcription"],
-                                "emotion": result.get("metadata", {}).get("emotion", "neutral"),
-                                "language": result.get("metadata", {}).get("language", "unknown"),
-                            })
-
-                        # Send response text
-                        if result.get("response_text"):
-                            await websocket.send_json({
-                                "type": "response",
-                                "text": result["response_text"],
-                                "metadata": result.get("metadata", {}),
-                            })
-
-                        # Send response audio (base64 encoded for WebSocket)
-                        if result.get("response_audio"):
-                            audio_b64 = base64.b64encode(
-                                result["response_audio"]
-                            ).decode("utf-8")
-
-                            await websocket.send_json({
-                                "type": "audio_response",
-                                "audio": audio_b64,
-                                "sample_rate": result.get("response_sample_rate", 22050),
-                                "format": "pcm_int16_mono",
-                            })
-
-                    except Exception as e:
-                        logger.error(
-                            "pipeline_processing_error",
-                            session=session.session_id,
-                            error=str(e),
-                        )
                         await websocket.send_json({
-                            "type": "error",
-                            "message": "Processing failed. Please try again.",
+                            "type": "vad",
+                            "status": "speech_end",
+                            "duration_s": round(audio_duration, 2),
                         })
-
-                    finally:
-                        session.reset_audio_buffer()
-                        session.is_processing = False
 
                         await websocket.send_json({
                             "type": "processing",
-                            "status": "complete",
+                            "status": "started",
                         })
+
+                        # Create background processing task for streaming
+                        buffer_copy = bytes(session.audio_buffer)
+                        session.reset_audio_buffer()
+                        
+                        async def process_task(audio_bytes, session_ref):
+                            try:
+                                async for chunk in pipeline.stream_process_audio(
+                                    audio_bytes=audio_bytes,
+                                    session=session_ref,
+                                    source_sample_rate=settings.sample_rate,
+                                ):
+                                    if chunk["type"] == "transcription":
+                                        await websocket.send_json({
+                                            "type": "transcription",
+                                            "text": chunk["text"],
+                                            "emotion": chunk.get("emotion", "neutral"),
+                                            "language": chunk.get("language", "unknown"),
+                                        })
+                                    elif chunk["type"] == "response_audio":
+                                        await websocket.send_json({
+                                            "type": "response",
+                                            "text": chunk["text"],
+                                            "metadata": chunk.get("metadata", {}),
+                                        })
+                                        audio_b64 = base64.b64encode(chunk["audio_bytes"]).decode("utf-8")
+                                        await websocket.send_json({
+                                            "type": "audio_response",
+                                            "audio": audio_b64,
+                                            "sample_rate": chunk.get("sample_rate", 22050),
+                                            "format": "pcm_int16_mono",
+                                        })
+                                    elif chunk["type"] == "error":
+                                        await websocket.send_json({"type": "error", "message": chunk["message"]})
+                            except asyncio.CancelledError:
+                                logger.info("processing_task_cancelled", session=session_ref.session_id)
+                            except Exception as e:
+                                logger.error("pipeline_processing_error", error=str(e))
+                                await websocket.send_json({"type": "error", "message": "Processing failed."})
+                            finally:
+                                session_ref.is_processing = False
+                                await websocket.send_json({"type": "processing", "status": "complete"})
+
+                        session.processing_task = asyncio.create_task(process_task(buffer_copy, session))
 
             elif "text" in message:
                 # JSON control message

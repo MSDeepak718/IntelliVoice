@@ -1,13 +1,12 @@
 """
-IntelliVoice — Qwen3-14B Reasoning Layer
+IntelliVoice — Fast LLM Reasoning Layer
 
 Layer 6: Core reasoning engine.
 
-Model: Qwen/Qwen3-14B
-    - 14B parameters, ~28GB FP16 → ~8.5GB NF4 (with double quant)
+Model: Qwen/Qwen2.5-3B-Instruct
+    - Fast reasoning model
     - Strong multilingual + code reasoning
-    - Long context window (32k tokens)
-    - Fits comfortably in 16GB VRAM with 4-bit quantization
+    - Fits comfortably in VRAM with 4-bit quantization
 
 Responsibilities:
     - Intent understanding
@@ -22,7 +21,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import threading
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, StoppingCriteria, StoppingCriteriaList
 
 from config import get_settings
 from config.logging_config import get_logger
@@ -41,7 +41,9 @@ Key behaviors:
 - Be helpful, warm, and professional
 - If the user sounds distressed, be empathetic first before solving their problem
 - Avoid long lists, markdown, emojis, or code blocks — your response will be spoken aloud
+- Do NOT use emojis, asterisks, hashtags, special formatting, or any other symbols that cannot be naturally spoken.
 - If the user's question is ambiguous, ask one short clarifying question
+- Do NOT use <think> tags or output internal reasoning. Provide the final spoken response directly.
 
 You receive context about the user's:
 - Speech transcription
@@ -52,10 +54,17 @@ You receive context about the user's:
 
 Use this context to generate appropriate, emotionally-aware spoken responses."""
 
+class InterruptibleStoppingCriteria(StoppingCriteria):
+    def __init__(self):
+        self.stop_now = False
 
-class Qwen3Reasoner:
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+        return self.stop_now
+
+
+class FastReasoner:
     """
-    Qwen3-14B reasoning engine (4-bit NF4 with double quant).
+    Fast LLM reasoning engine.
     """
 
     def __init__(self):
@@ -63,14 +72,20 @@ class Qwen3Reasoner:
         self.tokenizer = None
         self._device: torch.device = torch.device("cpu")
         self._is_loaded = False
-        self._config = ModelRegistry.QWEN3_14B
+        self._config = ModelRegistry.FAST_LLM
         self._settings = get_settings()
+        self._generation_lock = threading.Lock()
+        self._stopping_criteria = InterruptibleStoppingCriteria()
+
+    def cancel_generation(self):
+        """Abort any ongoing LLM generation."""
+        self._stopping_criteria.stop_now = True
 
     async def load(self, device: torch.device = torch.device("cuda")) -> None:
-        """Load Qwen3-14B with NF4 double-quant."""
+        """Load Fast LLM model."""
         if self._is_loaded:
             return
-        logger.info("loading_qwen3_14b", model=self._config.hf_model_id)
+        logger.info("loading_fast_llm", model=self._config.hf_model_id)
 
         try:
             quantization_config = None
@@ -94,7 +109,7 @@ class Qwen3Reasoner:
                 device_map="auto" if device.type == "cuda" else None,
                 quantization_config=quantization_config,
                 trust_remote_code=True,
-                torch_dtype=torch.float16,
+                dtype=torch.float16,
                 attn_implementation="sdpa",  # scaled-dot-product attention (no extra deps)
             )
             self.model.eval()
@@ -103,13 +118,13 @@ class Qwen3Reasoner:
 
             num_params = sum(p.numel() for p in self.model.parameters()) / 1e9
             logger.info(
-                "qwen3_14b_loaded",
+                "fast_llm_loaded",
                 params_b=f"{num_params:.1f}",
                 device=str(device),
                 quant="nf4_double_quant",
             )
         except Exception as e:
-            logger.error("qwen3_14b_load_failed", error=str(e))
+            logger.error("fast_llm_load_failed", error=str(e))
             raise
 
     def _build_messages(
@@ -174,10 +189,17 @@ class Qwen3Reasoner:
             Dict with 'response', 'tokens_generated', 'input_tokens', 'finish_reason'.
         """
         if not self._is_loaded:
-            raise RuntimeError("Qwen3-14B not loaded.")
+            raise RuntimeError("Fast LLM not loaded.")
 
-        max_new_tokens = max_new_tokens or self._settings.max_new_tokens
-        temperature = temperature if temperature is not None else self._settings.temperature
+        # Request any running generation to stop immediately
+        self.cancel_generation()
+
+        with self._generation_lock:
+            # Reset the stop flag for this new generation
+            self._stopping_criteria.stop_now = False
+
+            max_new_tokens = max_new_tokens or self._settings.max_new_tokens
+            temperature = temperature if temperature is not None else self._settings.temperature
         top_p = top_p if top_p is not None else self._settings.top_p
 
         messages = self._build_messages(
@@ -208,8 +230,9 @@ class Qwen3Reasoner:
                 "temperature": float(temperature),
                 "top_p": float(top_p),
             })
-        else:
             gen_kwargs["do_sample"] = False
+
+        gen_kwargs["stopping_criteria"] = StoppingCriteriaList([self._stopping_criteria])
 
         output_ids = self.model.generate(**gen_kwargs)
         new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]

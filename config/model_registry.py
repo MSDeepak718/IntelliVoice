@@ -7,10 +7,10 @@ and loading parameters for every layer in the pipeline.
 Stack (target: RTX 4080 16GB VRAM, 64 GB RAM):
     1. Preprocessing: Silero VAD + noisereduce (CPU / FP32)
     2A. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
-    2B. Emotion/Speaker: SenseVoice-Small + ECAPA-TDNN (FP16)
+    2B. Emotion/Speaker: superb/wav2vec2-base-superb-er + ECAPA-TDNN (FP16)
     3. Memory: Conversation Memory + MongoDB (CPU only)
-    4. Core Reasoning: Qwen3 14B (INT4 NF4 double quant)
-    5. TTS Synthesis: CosyVoice 2 (FP16)
+    4. Core Reasoning: Qwen2.5 3B (INT4 NF4 double quant)
+    5. TTS Synthesis: XTTS-v2 (FP16 via TTS)
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ class ModelConfig:
     order: LoadingOrder = LoadingOrder.PREPROCESSING
     revision: Optional[str] = None
     trust_remote_code: bool = False
-    torch_dtype: str = "float16"
+    dtype: str = "float16"
     device_map: str = "auto"
     quantization_config: Optional[Dict] = None
     extra_kwargs: Dict = field(default_factory=dict)
@@ -70,7 +70,7 @@ class ModelRegistry:
         precision=ModelPrecision.FP32,
         estimated_vram_mb=50,
         order=LoadingOrder.PREPROCESSING,
-        torch_dtype="float32",
+        dtype="float32",
         download_via_hf=False,
         notes="Loaded via torch.hub, runs on CPU",
     )
@@ -81,7 +81,7 @@ class ModelRegistry:
         precision=ModelPrecision.FP32,
         estimated_vram_mb=0,
         order=LoadingOrder.PREPROCESSING,
-        torch_dtype="float32",
+        dtype="float32",
         download_via_hf=False,
         notes="Spectral gating via noisereduce pip package, CPU only",
     )
@@ -92,18 +92,17 @@ class ModelRegistry:
         precision=ModelPrecision.FP16,
         estimated_vram_mb=1500,
         order=LoadingOrder.ASR,
-        torch_dtype="float16",
+        dtype="float16",
         notes="Loaded via faster-whisper",
     )
 
-    SENSEVOICE = ModelConfig(
-        name="sensevoice",
-        hf_model_id="FunAudioLLM/SenseVoiceSmall",
+    EMOTION = ModelConfig(
+        name="emotion",
+        hf_model_id="superb/wav2vec2-base-superb-er",
         precision=ModelPrecision.FP16,
-        estimated_vram_mb=300,
+        estimated_vram_mb=350,
         order=LoadingOrder.EMOTION_SPEAKER,
-        torch_dtype="float16",
-        trust_remote_code=True,
+        dtype="float16",
     )
 
     ECAPA_TDNN = ModelConfig(
@@ -112,31 +111,31 @@ class ModelRegistry:
         precision=ModelPrecision.FP16,
         estimated_vram_mb=100,
         order=LoadingOrder.EMOTION_SPEAKER,
-        torch_dtype="float16",
+        dtype="float16",
     )
 
-    QWEN3_14B = ModelConfig(
-        name="qwen3_14b",
-        hf_model_id="Qwen/Qwen3-14B",
+    FAST_LLM = ModelConfig(
+        name="fast_llm",
+        hf_model_id="Qwen/Qwen2.5-3B-Instruct",
         precision=ModelPrecision.INT4,
-        estimated_vram_mb=8500,
+        estimated_vram_mb=3000,
         order=LoadingOrder.REASONING,
-        torch_dtype="float16",
+        dtype="float16",
         quantization_config={
             "load_in_4bit": True,
             "bnb_4bit_quant_type": "nf4",
             "bnb_4bit_use_double_quant": True,
-        },
+    }
     )
 
-    COSYVOICE2 = ModelConfig(
-        name="cosyvoice2",
-        hf_model_id="FunAudioLLM/CosyVoice2-0.5B",
+    PIPER = ModelConfig(
+        name="piper",
+        hf_model_id="rhasspy/piper",
         precision=ModelPrecision.FP16,
-        estimated_vram_mb=1500,
+        estimated_vram_mb=500,
         order=LoadingOrder.TTS,
-        trust_remote_code=True,
-        torch_dtype="float16",
+        trust_remote_code=False,
+        dtype="float16",
     )
 
     @classmethod
@@ -146,10 +145,10 @@ class ModelRegistry:
             cls.SILERO_VAD,
             cls.NOISEREDUCE,
             cls.WHISPER,
-            cls.SENSEVOICE,
+            cls.EMOTION,
             cls.ECAPA_TDNN,
-            cls.QWEN3_14B,
-            cls.COSYVOICE2,
+            cls.FAST_LLM,
+            cls.PIPER,
         ]
 
     @classmethod

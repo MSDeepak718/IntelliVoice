@@ -40,6 +40,8 @@ class SessionState:
 
     # Processing flags
     is_processing: bool = False
+    silence_start_time: Optional[float] = None
+    processing_task: Optional[asyncio.Task] = None
 
     @property
     def duration_s(self) -> float:
@@ -55,6 +57,7 @@ class SessionState:
         self.audio_buffer = bytearray()
         self.is_speaking = False
         self.speech_start_time = None
+        self.silence_start_time = None
 
     def append_audio(self, chunk: bytes) -> None:
         """Append audio data to the buffer."""

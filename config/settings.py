@@ -56,10 +56,10 @@ class Settings(BaseSettings):
     # ---------- Model Paths (auto-downloaded if empty) ----------
     silero_vad_model_path: str = ""
     whisper_model_path: str = ""
-    sensevoice_model_path: str = ""
+    emotion_model_path: str = ""
     ecapa_tdnn_model_path: str = ""
     qwen3_14b_model_path: str = ""
-    cosyvoice2_model_path: str = ""
+    piper_model_path: str = ""
 
     # ---------- Audio ----------
     sample_rate: int = 16000

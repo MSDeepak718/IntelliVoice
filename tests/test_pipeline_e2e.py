@@ -43,13 +43,13 @@ class TestModelRegistry:
         peak = sum(m.estimated_vram_mb for m in ModelRegistry.get_all_models())
         assert peak < 16 * 1024, f"Peak {peak / 1024:.2f} GB exceeds 16 GB"
 
-    def test_qwen3_14b_config(self):
-        q3 = ModelRegistry.QWEN3_14B
-        assert q3.hf_model_id == "Qwen/Qwen3-14B"
-        assert q3.precision == ModelPrecision.INT4
-        assert q3.quantization_config is not None
-        assert q3.quantization_config["load_in_4bit"] is True
-        assert q3.quantization_config["bnb_4bit_use_double_quant"] is True
+    def test_fast_llm_config(self):
+        llm = ModelRegistry.FAST_LLM
+        assert llm.hf_model_id == "Qwen/Qwen2.5-3B-Instruct"
+        assert llm.precision == ModelPrecision.INT4
+        assert llm.quantization_config is not None
+        assert llm.quantization_config["load_in_4bit"] is True
+        assert llm.quantization_config["bnb_4bit_use_double_quant"] is True
 
 
 class TestGPUManager:

@@ -5,6 +5,11 @@ Sets up the FastAPI app with middleware, routes, and lifecycle events.
 """
 
 from __future__ import annotations
+import bitsandbytes  # Workaround: Pre-import to avoid SpeechBrain lazy-load inspect crash
+import torch
+# Workaround: Transformers 4.48+ expects FP8 datatypes which PyTorch 2.5 doesn't have on cu121
+if not hasattr(torch, "float8_e8m0fnu"):
+    torch.float8_e8m0fnu = None
 
 from contextlib import asynccontextmanager
 from pathlib import Path
