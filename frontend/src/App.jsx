@@ -38,8 +38,24 @@ export default function App() {
       setMessages(prev => [...prev, { role: 'user', text: msg.text }]);
     });
 
-    ws.setHandler('response', (msg) => {
-      setMessages(prev => [...prev, { role: 'assistant', text: msg.text }]);
+    ws.setHandler('response_start', () => {
+      setMessages(prev => [...prev, { role: 'assistant', text: '' }]);
+    });
+
+    ws.setHandler('response_chunk', (msg) => {
+      setMessages(prev => {
+        const newMessages = [...prev];
+        const lastIndex = newMessages.findLastIndex(m => m.role === 'assistant');
+        if (lastIndex !== -1) {
+          newMessages[lastIndex] = {
+            ...newMessages[lastIndex],
+            text: newMessages[lastIndex].text + msg.text
+          };
+        } else {
+          newMessages.push({ role: 'assistant', text: msg.text });
+        }
+        return newMessages;
+      });
     });
 
     ws.setHandler('audio_response', (msg) => {

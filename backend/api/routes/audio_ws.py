@@ -156,12 +156,16 @@ async def audio_websocket(websocket: WebSocket):
                                             "emotion": chunk.get("emotion", "neutral"),
                                             "language": chunk.get("language", "unknown"),
                                         })
-                                    elif chunk["type"] == "response_audio":
+                                    elif chunk["type"] == "response_start":
                                         await websocket.send_json({
-                                            "type": "response",
-                                            "text": chunk["text"],
-                                            "metadata": chunk.get("metadata", {}),
+                                            "type": "response_start"
                                         })
+                                    elif chunk["type"] == "response_chunk":
+                                        await websocket.send_json({
+                                            "type": "response_chunk",
+                                            "text": chunk["text"]
+                                        })
+                                    elif chunk["type"] == "response_audio":
                                         audio_b64 = base64.b64encode(chunk["audio_bytes"]).decode("utf-8")
                                         await websocket.send_json({
                                             "type": "audio_response",

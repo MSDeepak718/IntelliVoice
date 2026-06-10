@@ -51,13 +51,13 @@ class PiperSynthesizer:
             
             # Default to an excellent medium-quality English voice
             repo_id = "rhasspy/piper-voices"
-            model_file = "en/en_US/amy/medium/en_US-amy-medium.onnx"
-            config_file = "en/en_US/amy/medium/en_US-amy-medium.onnx.json"
+            model_file = "en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx"
+            config_file = "en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json"
             
             model_path = self.settings.piper_model_path
             
             if not model_path or not os.path.exists(model_path):
-                logger.info("downloading_piper_voice", voice="en_US-amy-medium")
+                logger.info("downloading_piper_voice", voice="en_US-hfc_female-medium")
                 model_path = hf_hub_download(repo_id=repo_id, filename=model_file)
                 config_path = hf_hub_download(repo_id=repo_id, filename=config_file)
             else:

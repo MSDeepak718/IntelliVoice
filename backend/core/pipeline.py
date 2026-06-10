@@ -309,18 +309,66 @@ class AudioPipeline:
 
             conversation_history = self.memory.get_conversation_context(session.session_id)
 
-            llm_result = await asyncio.to_thread(
-                self.reasoner.generate_response,
+            yield {"type": "response_start"}
+            
+            full_response = ""
+            buffer = ""
+            language = asr_res.get("language", "english")
+            emotion = emotion_res.get("emotion", "neutral")
+
+            async for token in self.reasoner.stream_generate_response(
                 user_message=transcription,
                 conversation_history=conversation_history,
                 emotion_context=emotion_res,
                 system_prompt="You are a helpful voice assistant engaged in a spoken conversation. Keep answers concise, natural, and conversational. NEVER use emojis, markdown formatting, bullet points, asterisks, or any symbols that cannot be spoken out loud. Write numbers as words if they are complex.",
                 max_new_tokens=150,
-            )
-            response_text = llm_result.get("response", "I'm sorry, I couldn't process that.")
+            ):
+                full_response += token
+                buffer += token
+
+                # Trigger TTS incrementally on sentence boundaries
+                if re.search(r'[.!?\n]', buffer):
+                    parts = re.split(r'(?<=[.!?\n])(?<!\b[A-Z]\.)(?<!\bMr\.)(?<!\bMrs\.)(?<!\bMs\.)(?<!\bDr\.)(?<!\bProf\.)(?<!\bSt\.)\s+', buffer)
+                    if len(parts) > 1:
+                        for part in parts[:-1]:
+                            part = part.strip()
+                            if part:
+                                tts_waveform, tts_sr = await asyncio.to_thread(
+                                    self.tts.synthesize,
+                                    text=part,
+                                    language=language,
+                                    speaker_embedding=speaker_emb if speaker_emb is not None and speaker_emb.sum() != 0 else None,
+                                    emotion=emotion,
+                                )
+                                yield {"type": "response_chunk", "text": part + " "}
+                                yield {
+                                    "type": "response_audio",
+                                    "audio_bytes": waveform_to_bytes(tts_waveform, dtype="int16"),
+                                    "sample_rate": tts_sr,
+                                    "metadata": {"emotion": emotion, "language": language}
+                                }
+                        buffer = parts[-1]
+
+            # Flush remaining buffer for TTS
+            buffer = buffer.strip()
+            if buffer:
+                tts_waveform, tts_sr = await asyncio.to_thread(
+                    self.tts.synthesize,
+                    text=buffer,
+                    language=language,
+                    speaker_embedding=speaker_emb if speaker_emb is not None and speaker_emb.sum() != 0 else None,
+                    emotion=emotion,
+                )
+                yield {"type": "response_chunk", "text": buffer}
+                yield {
+                    "type": "response_audio",
+                    "audio_bytes": waveform_to_bytes(tts_waveform, dtype="int16"),
+                    "sample_rate": tts_sr,
+                    "metadata": {"emotion": emotion, "language": language}
+                }
 
             tag_pattern = re.compile(r"\[(.*?)\]")
-            clean_response_text = tag_pattern.sub("", response_text).strip()
+            clean_response_text = tag_pattern.sub("", full_response).strip()
             think_pattern = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
             clean_response_text = think_pattern.sub("", clean_response_text).strip()
 
@@ -336,28 +384,6 @@ class AudioPipeline:
                     metadata={"emotion": emotion_res.get("emotion"), "language": asr_res.get("language")},
                 )
             )
-            
-            language = asr_res.get("language", "english")
-            emotion = emotion_res.get("emotion", "neutral")
-            
-            # Synthesize the entire response at once
-            tts_waveform, tts_sr = await asyncio.to_thread(
-                self.tts.synthesize,
-                text=clean_response_text,
-                language=language,
-                speaker_embedding=speaker_emb if speaker_emb is not None and speaker_emb.sum() != 0 else None,
-                emotion=emotion,
-            )
-
-            audio_bytes_out = waveform_to_bytes(tts_waveform, dtype="int16")
-            
-            yield {
-                "type": "response_audio",
-                "text": clean_response_text,
-                "audio_bytes": audio_bytes_out,
-                "sample_rate": tts_sr,
-                "metadata": {"emotion": emotion, "language": language}
-            }
 
         except asyncio.CancelledError:
             logger.info("stream_process_audio_cancelled", session=session.session_id)

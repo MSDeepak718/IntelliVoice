@@ -22,7 +22,14 @@ from typing import Any, Dict, List, Optional
 
 import torch
 import threading
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, StoppingCriteria, StoppingCriteriaList
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    StoppingCriteria,
+    StoppingCriteriaList,
+    TextIteratorStreamer,
+)
 
 from config import get_settings
 from config.logging_config import get_logger
@@ -31,8 +38,10 @@ from config.model_registry import ModelRegistry
 logger = get_logger("qwen3_reasoning")
 
 
-SYSTEM_PROMPT = """You are IntelliVoice, a multilingual AI voice assistant. \
+SYSTEM_PROMPT = """You are Kiara, a multilingual AI voice assistant. \
 You communicate naturally and empathetically.
+
+You will referred as kiara and you should also introduce as like that.
 
 Key behaviors:
 - Respond in the same language the user speaks (English, Hindi, Tamil, Telugu, or code-mixed)
@@ -53,6 +62,7 @@ You receive context about the user's:
 - Optional retrieved knowledge from the knowledge base
 
 Use this context to generate appropriate, emotionally-aware spoken responses."""
+
 
 class InterruptibleStoppingCriteria(StoppingCriteria):
     def __init__(self):
@@ -90,12 +100,18 @@ class FastReasoner:
         try:
             quantization_config = None
             if device.type == "cuda" and self._config.quantization_config:
-                quantization_config = BitsAndBytesConfig(**{
-                    "load_in_4bit": self._config.quantization_config.get("load_in_4bit", True),
-                    "bnb_4bit_compute_dtype": torch.float16,
-                    "bnb_4bit_quant_type": self._config.quantization_config.get("bnb_4bit_quant_type", "nf4"),
-                    "bnb_4bit_use_double_quant": self._config.quantization_config.get("bnb_4bit_use_double_quant", True),
-                })
+                quantization_config = BitsAndBytesConfig(
+                    **{
+                        "load_in_4bit": self._config.quantization_config.get("load_in_4bit", True),
+                        "bnb_4bit_compute_dtype": torch.float16,
+                        "bnb_4bit_quant_type": self._config.quantization_config.get(
+                            "bnb_4bit_quant_type", "nf4"
+                        ),
+                        "bnb_4bit_use_double_quant": self._config.quantization_config.get(
+                            "bnb_4bit_use_double_quant", True
+                        ),
+                    }
+                )
 
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self._config.hf_model_id,
@@ -109,7 +125,7 @@ class FastReasoner:
                 device_map="auto" if device.type == "cuda" else None,
                 quantization_config=quantization_config,
                 trust_remote_code=True,
-                dtype=torch.float16,
+                torch_dtype=torch.float16,
                 attn_implementation="sdpa",  # scaled-dot-product attention (no extra deps)
             )
             self.model.eval()
@@ -142,7 +158,9 @@ class FastReasoner:
             enriched_system += "\n\n[User emotion context]\n"
             enriched_system += f"- Emotion: {emotion_context.get('emotion', 'unknown')}\n"
             enriched_system += f"- Energy: {emotion_context.get('energy_level', 'unknown')}\n"
-            enriched_system += f"- Speaking rate: {emotion_context.get('speaking_rate', 'unknown')}\n"
+            enriched_system += (
+                f"- Speaking rate: {emotion_context.get('speaking_rate', 'unknown')}\n"
+            )
             confidence = emotion_context.get("confidence", 0)
             if isinstance(confidence, (int, float)) and confidence > 0:
                 enriched_system += f"- Confidence: {confidence:.2f}\n"
@@ -225,17 +243,19 @@ class FastReasoner:
 
         # Deterministic when temperature is 0 / very low; otherwise sample
         if temperature and temperature > 0.01:
-            gen_kwargs.update({
-                "do_sample": True,
-                "temperature": float(temperature),
-                "top_p": float(top_p),
-            })
+            gen_kwargs.update(
+                {
+                    "do_sample": True,
+                    "temperature": float(temperature),
+                    "top_p": float(top_p),
+                }
+            )
             gen_kwargs["do_sample"] = False
 
         gen_kwargs["stopping_criteria"] = StoppingCriteriaList([self._stopping_criteria])
 
         output_ids = self.model.generate(**gen_kwargs)
-        new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
+        new_tokens = output_ids[0][inputs["input_ids"].shape[1] :]
         response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
         result = {
@@ -251,6 +271,76 @@ class FastReasoner:
             in_tokens=result["input_tokens"],
         )
         return result
+
+    async def stream_generate_response(
+        self,
+        user_message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        emotion_context: Optional[Dict] = None,
+        rag_context: str = "",
+        system_prompt: str = SYSTEM_PROMPT,
+        max_new_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+    ):
+        """Streaming version of generate_response."""
+        import asyncio
+        if not self._is_loaded:
+            raise RuntimeError("Fast LLM not loaded.")
+
+        self.cancel_generation()
+
+        # We won't block the whole lock because we stream, just reset flag
+        self._stopping_criteria.stop_now = False
+
+        max_new_tokens = max_new_tokens or self._settings.max_new_tokens
+        temperature = temperature if temperature is not None else self._settings.temperature
+        top_p = top_p if top_p is not None else self._settings.top_p
+
+        messages = self._build_messages(
+            user_message=user_message,
+            conversation_history=conversation_history,
+            emotion_context=emotion_context,
+            rag_context=rag_context,
+            system_prompt=system_prompt,
+        )
+
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inputs = self.tokenizer(text, return_tensors="pt").to(self._device)
+
+        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+
+        gen_kwargs: Dict[str, Any] = {
+            **inputs,
+            "max_new_tokens": max_new_tokens,
+            "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+            "streamer": streamer,
+            "stopping_criteria": StoppingCriteriaList([self._stopping_criteria]),
+        }
+
+        if temperature and temperature > 0.01:
+            gen_kwargs.update(
+                {
+                    "do_sample": True,
+                    "temperature": float(temperature),
+                    "top_p": float(top_p),
+                }
+            )
+        else:
+            gen_kwargs["do_sample"] = False
+
+        thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
+        thread.start()
+
+        for new_text in streamer:
+            yield new_text
+            await asyncio.sleep(0)  # Yield control to event loop
+            
+        thread.join()
 
     @property
     def is_loaded(self) -> bool:
