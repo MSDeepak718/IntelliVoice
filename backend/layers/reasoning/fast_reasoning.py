@@ -38,10 +38,10 @@ from config.model_registry import ModelRegistry
 logger = get_logger("qwen3_reasoning")
 
 
-SYSTEM_PROMPT = """You are Kiara, a multilingual AI voice assistant. \
+SYSTEM_PROMPT = """You are Dhurva, a multilingual AI voice assistant. \
 You communicate naturally and empathetically.
 
-You will referred as kiara and you should also introduce as like that.
+You will referred as Dhurva and you should also introduce as like that.
 
 Key behaviors:
 - Respond in the same language the user speaks (English, Hindi, Tamil, Telugu, or code-mixed)
@@ -125,7 +125,7 @@ class FastReasoner:
                 device_map="auto" if device.type == "cuda" else None,
                 quantization_config=quantization_config,
                 trust_remote_code=True,
-                torch_dtype=torch.float16,
+                dtype=torch.float16,
                 attn_implementation="sdpa",  # scaled-dot-product attention (no extra deps)
             )
             self.model.eval()

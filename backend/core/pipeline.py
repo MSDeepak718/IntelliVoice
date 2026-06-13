@@ -46,7 +46,7 @@ logger = get_logger("pipeline")
 from backend.layers.memory.conversation_memory import ConversationMemory
 from backend.layers.memory.long_term_memory import LongTermMemory
 from backend.layers.reasoning.fast_reasoning import FastReasoner
-from backend.layers.speech_generation.piper_tts import PiperSynthesizer
+from backend.layers.speech_generation.omnivoice_tts import OmniVoiceSynthesizer
 
 from backend.layers.asr.whisper_asr import WhisperASR
 from backend.layers.speaker.emotion import EmotionAnalyzer
@@ -76,7 +76,7 @@ class AudioPipeline:
 
         # 4 & 5. Core Reasoning & TTS
         self.reasoner = FastReasoner()
-        self.tts = PiperSynthesizer()
+        self.tts = OmniVoiceSynthesizer()
 
         self._is_initialized = False
 
@@ -115,9 +115,9 @@ class AudioPipeline:
         self.gpu.register_model("reasoner", self.reasoner.model, LoadingOrder.REASONING, 8500)
 
         # Order 5: TTS Synthesis
-        logger.info("loading_piper_tts")
+        logger.info("loading_omnivoice")
         await self.tts.load(device=device)
-        self.gpu.register_model("tts", self.tts.model, LoadingOrder.TTS, 500)
+        self.gpu.register_model("tts", self.tts.model, LoadingOrder.TTS, 4000)
 
         # Memory systems (CPU only)
         await self.memory.initialize()
@@ -200,7 +200,7 @@ class AudioPipeline:
                 user_message=transcription,
                 conversation_history=conversation_history,
                 emotion_context=emotion_res,
-                system_prompt="You are a helpful voice assistant. Keep answers very brief.",
+                system_prompt="You are Dhurva, a helpful AI voice assistant. Keep answers very brief.",
                 max_new_tokens=150,
             )
             response_text = llm_result.get("response", "I'm sorry, I couldn't process that.")
@@ -320,7 +320,7 @@ class AudioPipeline:
                 user_message=transcription,
                 conversation_history=conversation_history,
                 emotion_context=emotion_res,
-                system_prompt="You are a helpful voice assistant engaged in a spoken conversation. Keep answers concise, natural, and conversational. NEVER use emojis, markdown formatting, bullet points, asterisks, or any symbols that cannot be spoken out loud. Write numbers as words if they are complex.",
+                system_prompt="You are Dhurva, a helpful AI voice assistant engaged in a spoken conversation. Keep answers concise, natural, and conversational. NEVER use emojis, markdown formatting, bullet points, asterisks, or any symbols that cannot be spoken out loud. Write numbers as words if they are complex.",
                 max_new_tokens=150,
             ):
                 full_response += token
@@ -332,6 +332,13 @@ class AudioPipeline:
                     if len(parts) > 1:
                         for part in parts[:-1]:
                             part = part.strip()
+                            
+                            # Strip out any think blocks or tags before sending to TTS
+                            part = re.sub(r"\[.*?\]", "", part)
+                            part = re.sub(r"<think>.*?</think>\s*", "", part, flags=re.DOTALL)
+                            part = part.replace("<think>", "").replace("</think>", "")
+                            part = part.strip()
+
                             if part:
                                 tts_waveform, tts_sr = await asyncio.to_thread(
                                     self.tts.synthesize,
@@ -351,6 +358,13 @@ class AudioPipeline:
 
             # Flush remaining buffer for TTS
             buffer = buffer.strip()
+            
+            # Clean final buffer
+            buffer = re.sub(r"\[.*?\]", "", buffer)
+            buffer = re.sub(r"<think>.*?</think>\s*", "", buffer, flags=re.DOTALL)
+            buffer = buffer.replace("<think>", "").replace("</think>", "")
+            buffer = buffer.strip()
+
             if buffer:
                 tts_waveform, tts_sr = await asyncio.to_thread(
                     self.tts.synthesize,
@@ -416,7 +430,7 @@ class AudioPipeline:
                 user_message=text,
                 conversation_history=conversation_history,
                 emotion_context={"emotion": "neutral", "energy": "medium", "pace": "moderate"},
-                system_prompt="You are a helpful voice assistant. Keep answers concise and conversational.",
+                system_prompt="You are Dhurva, a helpful AI voice assistant. Keep answers concise and conversational.",
                 max_new_tokens=self.settings.max_new_tokens,
             )
             response_text = llm_result.get("response", "I'm sorry, I couldn't process that.")

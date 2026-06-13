@@ -75,15 +75,15 @@ class ModelRegistry:
         notes="Loaded via torch.hub, runs on CPU",
     )
 
-    NOISEREDUCE = ModelConfig(
-        name="noisereduce",
-        hf_model_id="n/a",
+    RESEMBLE_ENHANCE = ModelConfig(
+        name="resemble_enhance",
+        hf_model_id="resemble-ai/resemble-enhance",
         precision=ModelPrecision.FP32,
-        estimated_vram_mb=0,
+        estimated_vram_mb=300,
         order=LoadingOrder.PREPROCESSING,
         dtype="float32",
-        download_via_hf=False,
-        notes="Spectral gating via noisereduce pip package, CPU only",
+        download_via_hf=True,
+        notes="Loaded via resemble_enhance library",
     )
 
     WHISPER = ModelConfig(
@@ -116,9 +116,9 @@ class ModelRegistry:
 
     FAST_LLM = ModelConfig(
         name="fast_llm",
-        hf_model_id="Qwen/Qwen2.5-3B-Instruct",
+        hf_model_id="Qwen/Qwen2.5-7B-Instruct",
         precision=ModelPrecision.INT4,
-        estimated_vram_mb=3000,
+        estimated_vram_mb=5000,
         order=LoadingOrder.REASONING,
         dtype="float16",
         quantization_config={
@@ -128,13 +128,13 @@ class ModelRegistry:
     }
     )
 
-    PIPER = ModelConfig(
-        name="piper",
-        hf_model_id="rhasspy/piper",
+    OMNIVOICE = ModelConfig(
+        name="omnivoice",
+        hf_model_id="k2-fsa/OmniVoice",
         precision=ModelPrecision.FP16,
-        estimated_vram_mb=500,
+        estimated_vram_mb=4000,
         order=LoadingOrder.TTS,
-        trust_remote_code=False,
+        trust_remote_code=True,
         dtype="float16",
     )
 
@@ -143,12 +143,12 @@ class ModelRegistry:
         """Return all model configs."""
         return [
             cls.SILERO_VAD,
-            cls.NOISEREDUCE,
+            cls.RESEMBLE_ENHANCE,
             cls.WHISPER,
             cls.EMOTION,
             cls.ECAPA_TDNN,
             cls.FAST_LLM,
-            cls.PIPER,
+            cls.OMNIVOICE,
         ]
 
     @classmethod
