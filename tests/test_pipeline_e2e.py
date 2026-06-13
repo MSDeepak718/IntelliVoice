@@ -35,8 +35,8 @@ class TestModelRegistry:
 
     def test_all_models_listed(self):
         models = ModelRegistry.get_all_models()
-        # VAD + Whisper + LLM + OmniVoice = 4
-        assert len(models) == 4
+        # VAD + DeepFilterNet + Whisper + Emotion + LLM + OmniVoice = 6
+        assert len(models) == 6
 
     def test_peak_vram_under_16gb(self):
         # Peak VRAM is just the sum of all estimated VRAM

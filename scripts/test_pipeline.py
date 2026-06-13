@@ -49,15 +49,23 @@ def generate_speech_like_audio(duration_s: float = 3.0, sample_rate: int = 16000
 
 async def test_preprocessing():
     print("\n" + "=" * 50)
-    print("  Preprocessing Layer (VAD)")
+    print("  Preprocessing Layer (VAD + DeepFilterNet)")
     print("=" * 50)
 
     from backend.layers.preprocessing.vad import SileroVAD
+    from backend.layers.preprocessing.noise_suppression import NoiseSuppressor
     from backend.layers.preprocessing.audio_utils import bytes_to_waveform, normalize_waveform
 
     vad = SileroVAD()
     await vad.load()
     print("[OK] Silero VAD loaded")
+
+    ns = NoiseSuppressor()
+    await ns.load()
+    print(
+        f"{'[OK]' if ns.is_loaded else '[WARN]'} DeepFilterNet "
+        f"{'loaded' if ns.is_loaded else 'unavailable (passthrough mode)'}"
+    )
 
     audio_bytes = generate_speech_like_audio(3.0)
     waveform, sr = bytes_to_waveform(audio_bytes)
@@ -68,8 +76,9 @@ async def test_preprocessing():
     segments = vad.detect_speech(waveform)
     print(f"  Speech segments: {len(segments)}")
 
-    normalized = normalize_waveform(waveform)
-    print(f"  Normalized shape: {normalized.shape}")
+    clean = ns.suppress_noise(waveform)
+    normalized = normalize_waveform(clean)
+    print(f"  Denoised + normalized shape: {normalized.shape}")
     print("[OK] Preprocessing test passed!")
     return True
 

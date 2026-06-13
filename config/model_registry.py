@@ -5,10 +5,11 @@ Defines all model configurations, HuggingFace IDs, VRAM budgets,
 and loading parameters for every layer in the pipeline.
 
 Stack (target: RTX 4080 16GB VRAM, 64 GB RAM):
-    1. Preprocessing: Silero VAD (CPU / FP32)
+    1. Preprocessing: Silero VAD (CPU / FP32) + DeepFilterNet (CPU)
     2. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
-    3. Core Reasoning: Qwen2.5-7B-Instruct (INT4 NF4 double quant)
-    4. TTS Synthesis: OmniVoice (FP16)
+    3. Emotion: wav2vec2-base-superb-er (FP16)
+    4. Core Reasoning: Qwen2.5-7B-Instruct (INT4 NF4 double quant)
+    5. TTS Synthesis: OmniVoice (FP16)
 """
 
 from __future__ import annotations
@@ -31,8 +32,9 @@ class LoadingOrder(int, Enum):
 
     PREPROCESSING = 1
     ASR = 2
-    REASONING = 3
-    TTS = 4
+    EMOTION = 3
+    REASONING = 4
+    TTS = 5
 
 
 @dataclass
@@ -72,9 +74,20 @@ class ModelRegistry:
         notes="Loaded via torch.hub, runs on CPU",
     )
 
+    DEEPFILTERNET = ModelConfig(
+        name="deepfilternet",
+        hf_model_id="deepfilternet/deepfilternet3",
+        precision=ModelPrecision.FP32,
+        estimated_vram_mb=0,
+        order=LoadingOrder.PREPROCESSING,
+        dtype="float32",
+        download_via_hf=False,
+        notes="CPU-only noise suppression, loaded via df.enhance",
+    )
+
     WHISPER = ModelConfig(
         name="whisper",
-        hf_model_id="deepdml/faster-whisper-large-v3-turbo-ct2",
+        hf_model_id="Systran/faster-distil-whisper-large-v3",
         precision=ModelPrecision.FP16,
         estimated_vram_mb=1500,
         order=LoadingOrder.ASR,
@@ -82,11 +95,21 @@ class ModelRegistry:
         notes="Loaded via faster-whisper",
     )
 
+    EMOTION = ModelConfig(
+        name="emotion",
+        hf_model_id="superb/wav2vec2-base-superb-er",
+        precision=ModelPrecision.FP16,
+        estimated_vram_mb=350,
+        order=LoadingOrder.EMOTION,
+        dtype="float16",
+        notes="Emotion recognition from audio",
+    )
+
     FAST_LLM = ModelConfig(
         name="fast_llm",
-        hf_model_id="Qwen/Qwen2.5-7B-Instruct",
+        hf_model_id="Qwen/Qwen2.5-3B-Instruct",
         precision=ModelPrecision.INT4,
-        estimated_vram_mb=5000,
+        estimated_vram_mb=3000,
         order=LoadingOrder.REASONING,
         dtype="float16",
         quantization_config={
@@ -111,7 +134,9 @@ class ModelRegistry:
         """Return all model configs."""
         return [
             cls.SILERO_VAD,
+            cls.DEEPFILTERNET,
             cls.WHISPER,
+            cls.EMOTION,
             cls.FAST_LLM,
             cls.OMNIVOICE,
         ]

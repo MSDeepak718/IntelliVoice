@@ -85,8 +85,8 @@ async def audio_websocket(websocket: WebSocket):
                 from backend.layers.preprocessing.audio_utils import bytes_to_waveform
                 waveform, sr = bytes_to_waveform(bytes(session.audio_buffer))
 
-                # Check VAD on the last 0.5 seconds of audio
-                chunk_len = int(0.5 * sr)
+                # Check VAD on the last 0.8 seconds of audio (wider window for stability)
+                chunk_len = int(0.8 * sr)
                 if waveform.shape[-1] >= chunk_len:
                     recent_waveform = waveform[..., -chunk_len:]
                 else:
@@ -124,7 +124,7 @@ async def audio_websocket(websocket: WebSocket):
                         session.silence_start_time = time.time()
 
                     silence_duration = time.time() - session.silence_start_time
-                    if silence_duration >= 0.6:  # 600ms silence = done speaking
+                    if silence_duration >= 1.2:  # 1200ms silence = done speaking (relaxed from 600ms)
                         session.is_speaking = False
                         session.is_processing = True
 

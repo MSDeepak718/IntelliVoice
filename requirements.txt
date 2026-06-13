@@ -32,6 +32,9 @@ protobuf>=5.0.0
 # ---------- Silero VAD ----------
 # Loaded via torch.hub, no separate package needed
 
+# ---------- Noise Suppression ----------
+deepfilternet
+
 # ---------- ASR ----------
 faster-whisper>=1.0.0
 

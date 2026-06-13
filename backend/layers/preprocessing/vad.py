@@ -82,8 +82,9 @@ class SileroVAD:
             self.model,
             threshold=self.threshold,
             sampling_rate=self.sample_rate,
-            min_speech_duration_ms=250,
-            min_silence_duration_ms=100,
+            min_speech_duration_ms=300,
+            min_silence_duration_ms=500,
+            speech_pad_ms=120,
             return_seconds=return_seconds,
         )
 

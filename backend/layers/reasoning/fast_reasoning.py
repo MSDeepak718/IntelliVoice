@@ -303,7 +303,15 @@ class FastReasoner:
         else:
             gen_kwargs["do_sample"] = False
 
-        thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
+        def generate_with_stream(**kwargs):
+            if self._device.type == "cuda":
+                stream = torch.cuda.Stream()
+                with torch.cuda.stream(stream):
+                    self.model.generate(**kwargs)
+            else:
+                self.model.generate(**kwargs)
+
+        thread = threading.Thread(target=generate_with_stream, kwargs=gen_kwargs)
         thread.start()
 
         for new_text in streamer:

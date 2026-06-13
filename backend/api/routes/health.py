@@ -44,7 +44,10 @@ async def gpu_health(request: Request):
         },
         "models": {
             "vad": pipeline.vad.is_loaded,
+            "noise_suppressor": pipeline.noise_suppressor.is_loaded,
+            "noise_suppressor_backend": pipeline.noise_suppressor.backend,
             "asr": pipeline.asr._is_loaded,
+            "emotion": pipeline.emotion_analyzer._is_loaded,
             "reasoner": pipeline.reasoner.is_loaded,
             "tts": pipeline.tts.is_loaded,
         },
