@@ -40,11 +40,6 @@ class Settings(BaseSettings):
         default=["http://localhost:5173", "http://localhost:3000"]
     )
 
-    # ---------- MongoDB ----------
-    mongodb_uri: str = "mongodb://intellivoice:intellivoice@localhost:27017"
-    mongodb_db_name: str = "intellivoice"
-
-
     # ---------- HuggingFace ----------
     hf_token: str = ""
     hf_home: str = "./models"
@@ -52,14 +47,6 @@ class Settings(BaseSettings):
     # ---------- GPU ----------
     cuda_visible_devices: str = "0"
     gpu_memory_fraction: float = 0.92
-
-    # ---------- Model Paths (auto-downloaded if empty) ----------
-    silero_vad_model_path: str = ""
-    whisper_model_path: str = ""
-    emotion_model_path: str = ""
-    ecapa_tdnn_model_path: str = ""
-    qwen3_14b_model_path: str = ""
-    piper_model_path: str = ""
 
     # ---------- Audio ----------
     sample_rate: int = 16000
@@ -72,10 +59,9 @@ class Settings(BaseSettings):
     max_audio_length_s: int = 30
 
     # ---------- LLM ----------
-    max_new_tokens: int = 512
+    max_new_tokens: int = 150
     temperature: float = 0.7
     top_p: float = 0.9
-
 
     @property
     def project_root(self) -> Path:

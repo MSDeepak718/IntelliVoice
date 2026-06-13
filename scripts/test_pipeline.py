@@ -49,23 +49,15 @@ def generate_speech_like_audio(duration_s: float = 3.0, sample_rate: int = 16000
 
 async def test_preprocessing():
     print("\n" + "=" * 50)
-    print("  Preprocessing Layer (VAD + DeepFilterNet)")
+    print("  Preprocessing Layer (VAD)")
     print("=" * 50)
 
     from backend.layers.preprocessing.vad import SileroVAD
-    from backend.layers.preprocessing.noise_suppression import NoiseSuppressor
-    from backend.layers.preprocessing.audio_utils import bytes_to_waveform
+    from backend.layers.preprocessing.audio_utils import bytes_to_waveform, normalize_waveform
 
     vad = SileroVAD()
     await vad.load()
     print("[OK] Silero VAD loaded")
-
-    ns = NoiseSuppressor()
-    await ns.load()
-    print(
-        f"{'[OK]' if ns.is_loaded else '[WARN]'} DeepFilterNet "
-        f"{'loaded' if ns.is_loaded else 'unavailable (passthrough mode)'}"
-    )
 
     audio_bytes = generate_speech_like_audio(3.0)
     waveform, sr = bytes_to_waveform(audio_bytes)
@@ -76,18 +68,17 @@ async def test_preprocessing():
     segments = vad.detect_speech(waveform)
     print(f"  Speech segments: {len(segments)}")
 
-    clean = ns.suppress_noise(waveform)
-    print(f"  Denoised shape: {clean.shape}")
+    normalized = normalize_waveform(waveform)
+    print(f"  Normalized shape: {normalized.shape}")
     print("[OK] Preprocessing test passed!")
     return True
 
 
 async def test_memory():
     print("\n" + "=" * 50)
-    print("  Memory Layer (LangGraph + MongoDB)")
+    print("  Memory Layer (Session-Scoped)")
     print("=" * 50)
     from backend.layers.memory.conversation_memory import ConversationMemory
-    from backend.layers.memory.long_term_memory import LongTermMemory
 
     memory = ConversationMemory()
     await memory.initialize()
@@ -99,13 +90,9 @@ async def test_memory():
     assert len(context) == 2
     print(f"  Context turns: {len(context)}")
 
-    ltm = LongTermMemory()
-    await ltm.connect()
-    print(f"  MongoDB: {'connected' if ltm.is_connected else 'not available (using in-memory)'}")
     memory.remove_session("test-123")
     print("[OK] Memory test passed!")
     return True
-
 
 
 async def test_vram_budget():
@@ -130,22 +117,23 @@ async def test_full_pipeline():
     print(f"  Test audio: {len(audio_bytes)} bytes")
 
     start = time.time()
-    result = await pipeline.process_audio(
+    chunks = []
+    async for chunk in pipeline.stream_process_audio(
         audio_bytes=audio_bytes,
         session=session,
-    )
+    ):
+        chunks.append(chunk)
     elapsed = time.time() - start
 
     print("\n  Results:")
-    print(f"    Transcription : {result.get('transcription', 'N/A')[:100]}")
-    print(f"    Emotion       : {result.get('metadata', {}).get('emotion', 'N/A')}")
-    print(f"    Response      : {result.get('response_text', 'N/A')[:100]}")
-    print(f"    Audio out     : {len(result.get('response_audio', b''))} bytes")
+    for chunk in chunks:
+        if chunk["type"] == "transcription":
+            print(f"    Transcription : {chunk.get('text', 'N/A')[:100]}")
+        elif chunk["type"] == "response_chunk":
+            print(f"    Response      : {chunk.get('text', 'N/A')[:100]}")
+        elif chunk["type"] == "response_audio":
+            print(f"    Audio chunk   : {len(chunk.get('audio_bytes', b''))} bytes")
     print(f"    Total time    : {elapsed:.2f}s")
-
-    md = result.get("metadata", {})
-    print(f"    Total time    : {md.get('total_ms', 'N/A')}ms")
-    print(f"    Style tags    : {md.get('style_tags', [])}")
 
     await pipeline.shutdown()
     print("\n[OK] Full pipeline test complete!")

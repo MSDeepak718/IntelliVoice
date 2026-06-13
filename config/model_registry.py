@@ -5,12 +5,10 @@ Defines all model configurations, HuggingFace IDs, VRAM budgets,
 and loading parameters for every layer in the pipeline.
 
 Stack (target: RTX 4080 16GB VRAM, 64 GB RAM):
-    1. Preprocessing: Silero VAD + noisereduce (CPU / FP32)
-    2A. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
-    2B. Emotion/Speaker: superb/wav2vec2-base-superb-er + ECAPA-TDNN (FP16)
-    3. Memory: Conversation Memory + MongoDB (CPU only)
-    4. Core Reasoning: Qwen2.5 3B (INT4 NF4 double quant)
-    5. TTS Synthesis: XTTS-v2 (FP16 via TTS)
+    1. Preprocessing: Silero VAD (CPU / FP32)
+    2. ASR: Whisper large-v3-turbo (FP16 via faster-whisper)
+    3. Core Reasoning: Qwen2.5-7B-Instruct (INT4 NF4 double quant)
+    4. TTS Synthesis: OmniVoice (FP16)
 """
 
 from __future__ import annotations
@@ -33,9 +31,8 @@ class LoadingOrder(int, Enum):
 
     PREPROCESSING = 1
     ASR = 2
-    EMOTION_SPEAKER = 3
-    REASONING = 4
-    TTS = 5
+    REASONING = 3
+    TTS = 4
 
 
 @dataclass
@@ -75,17 +72,6 @@ class ModelRegistry:
         notes="Loaded via torch.hub, runs on CPU",
     )
 
-    RESEMBLE_ENHANCE = ModelConfig(
-        name="resemble_enhance",
-        hf_model_id="resemble-ai/resemble-enhance",
-        precision=ModelPrecision.FP32,
-        estimated_vram_mb=300,
-        order=LoadingOrder.PREPROCESSING,
-        dtype="float32",
-        download_via_hf=True,
-        notes="Loaded via resemble_enhance library",
-    )
-
     WHISPER = ModelConfig(
         name="whisper",
         hf_model_id="deepdml/faster-whisper-large-v3-turbo-ct2",
@@ -94,24 +80,6 @@ class ModelRegistry:
         order=LoadingOrder.ASR,
         dtype="float16",
         notes="Loaded via faster-whisper",
-    )
-
-    EMOTION = ModelConfig(
-        name="emotion",
-        hf_model_id="superb/wav2vec2-base-superb-er",
-        precision=ModelPrecision.FP16,
-        estimated_vram_mb=350,
-        order=LoadingOrder.EMOTION_SPEAKER,
-        dtype="float16",
-    )
-
-    ECAPA_TDNN = ModelConfig(
-        name="ecapa_tdnn",
-        hf_model_id="speechbrain/spkrec-ecapa-voxceleb",
-        precision=ModelPrecision.FP16,
-        estimated_vram_mb=100,
-        order=LoadingOrder.EMOTION_SPEAKER,
-        dtype="float16",
     )
 
     FAST_LLM = ModelConfig(
@@ -125,7 +93,7 @@ class ModelRegistry:
             "load_in_4bit": True,
             "bnb_4bit_quant_type": "nf4",
             "bnb_4bit_use_double_quant": True,
-    }
+        },
     )
 
     OMNIVOICE = ModelConfig(
@@ -143,10 +111,7 @@ class ModelRegistry:
         """Return all model configs."""
         return [
             cls.SILERO_VAD,
-            cls.RESEMBLE_ENHANCE,
             cls.WHISPER,
-            cls.EMOTION,
-            cls.ECAPA_TDNN,
             cls.FAST_LLM,
             cls.OMNIVOICE,
         ]

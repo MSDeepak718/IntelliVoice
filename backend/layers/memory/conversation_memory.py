@@ -1,26 +1,26 @@
 """
 IntelliVoice — Conversation Memory
 
-Manages session memory for multi-turn dialogue.
+Manages session-scoped memory for multi-turn dialogue.
+Memory is ephemeral — tied to the WebSocket session lifetime.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from config.logging_config import get_logger
-from backend.layers.memory.schemas import SessionMemory, ConversationTurn
+from backend.layers.memory.schemas import SessionMemory
 
 logger = get_logger("conversation_memory")
 
 
 class ConversationMemory:
     """
-    Conversation memory manager.
+    Session-scoped conversation memory manager.
 
-    Manages:
-        - Session memory (current conversation)
-        - Turn history
+    Each WebSocket session gets its own memory that is
+    discarded when the session ends.
     """
 
     def __init__(self):
@@ -82,13 +82,6 @@ class ConversationMemory:
         if not session:
             return []
         return session.to_messages(max_turns)
-
-    def get_emotion_trend(self, session_id: str) -> List[str]:
-        """Get the emotion trend for a session."""
-        session = self._sessions.get(session_id)
-        if not session:
-            return []
-        return session.emotion_history
 
     def remove_session(self, session_id: str) -> None:
         """Remove a session."""

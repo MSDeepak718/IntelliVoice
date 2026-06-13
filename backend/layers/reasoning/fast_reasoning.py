@@ -1,9 +1,9 @@
 """
 IntelliVoice — Fast LLM Reasoning Layer
 
-Layer 6: Core reasoning engine.
+Core reasoning engine.
 
-Model: Qwen/Qwen2.5-3B-Instruct
+Model: Qwen/Qwen2.5-7B-Instruct
     - Fast reasoning model
     - Strong multilingual + code reasoning
     - Fits comfortably in VRAM with 4-bit quantization
@@ -11,9 +11,8 @@ Model: Qwen/Qwen2.5-3B-Instruct
 Responsibilities:
     - Intent understanding
     - Planning and problem solving
-    - Question answering (with RAG context)
+    - Question answering
     - Dialogue management
-    - Emotion-aware response generation
 """
 
 from __future__ import annotations
@@ -35,10 +34,11 @@ from config import get_settings
 from config.logging_config import get_logger
 from config.model_registry import ModelRegistry
 
-logger = get_logger("qwen3_reasoning")
+logger = get_logger("qwen_reasoning")
 
 
-SYSTEM_PROMPT = """You are Dhurva, a multilingual AI voice assistant. \
+SYSTEM_PROMPT = """\
+You are Dhurva, a multilingual AI voice assistant. \
 You communicate naturally and empathetically.
 
 You will referred as Dhurva and you should also introduce as like that.
@@ -56,12 +56,9 @@ Key behaviors:
 
 You receive context about the user's:
 - Speech transcription
-- Detected emotion and energy level
-- Speaking style
 - Recent conversation turns
-- Optional retrieved knowledge from the knowledge base
 
-Use this context to generate appropriate, emotionally-aware spoken responses."""
+Use this context to generate appropriate spoken responses."""
 
 
 class InterruptibleStoppingCriteria(StoppingCriteria):
@@ -147,28 +144,10 @@ class FastReasoner:
         self,
         user_message: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        emotion_context: Optional[Dict] = None,
-        rag_context: str = "",
         system_prompt: str = SYSTEM_PROMPT,
     ) -> List[Dict[str, str]]:
         """Compose the chat-template messages list."""
-        enriched_system = system_prompt
-
-        if emotion_context:
-            enriched_system += "\n\n[User emotion context]\n"
-            enriched_system += f"- Emotion: {emotion_context.get('emotion', 'unknown')}\n"
-            enriched_system += f"- Energy: {emotion_context.get('energy_level', 'unknown')}\n"
-            enriched_system += (
-                f"- Speaking rate: {emotion_context.get('speaking_rate', 'unknown')}\n"
-            )
-            confidence = emotion_context.get("confidence", 0)
-            if isinstance(confidence, (int, float)) and confidence > 0:
-                enriched_system += f"- Confidence: {confidence:.2f}\n"
-
-        if rag_context:
-            enriched_system += f"\n\n[Retrieved knowledge]\n{rag_context}"
-
-        messages: List[Dict[str, str]] = [{"role": "system", "content": enriched_system}]
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
         if conversation_history:
             # Keep the most recent turns, drop empties
@@ -183,21 +162,17 @@ class FastReasoner:
         self,
         user_message: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        emotion_context: Optional[Dict] = None,
-        rag_context: str = "",
         system_prompt: str = SYSTEM_PROMPT,
         max_new_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Generate a reasoned, emotion-aware response.
+        Generate a response (non-streaming, used for text chat mode).
 
         Args:
-            user_message: Transcribed user speech.
+            user_message: Transcribed user speech or typed text.
             conversation_history: Previous turns (most recent last).
-            emotion_context: Dict from Emotion2Vec.
-            rag_context: Formatted RAG context (from `RAGRetriever.format_context`).
             system_prompt: Override the default system prompt.
             max_new_tokens: Cap on new tokens.
             temperature: Sampling temperature.
@@ -218,79 +193,76 @@ class FastReasoner:
 
             max_new_tokens = max_new_tokens or self._settings.max_new_tokens
             temperature = temperature if temperature is not None else self._settings.temperature
-        top_p = top_p if top_p is not None else self._settings.top_p
+            top_p = top_p if top_p is not None else self._settings.top_p
 
-        messages = self._build_messages(
-            user_message=user_message,
-            conversation_history=conversation_history,
-            emotion_context=emotion_context,
-            rag_context=rag_context,
-            system_prompt=system_prompt,
-        )
-
-        text = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        inputs = self.tokenizer(text, return_tensors="pt").to(self._device)
-
-        gen_kwargs: Dict[str, Any] = {
-            **inputs,
-            "max_new_tokens": max_new_tokens,
-            "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
-        }
-
-        # Deterministic when temperature is 0 / very low; otherwise sample
-        if temperature and temperature > 0.01:
-            gen_kwargs.update(
-                {
-                    "do_sample": True,
-                    "temperature": float(temperature),
-                    "top_p": float(top_p),
-                }
+            messages = self._build_messages(
+                user_message=user_message,
+                conversation_history=conversation_history,
+                system_prompt=system_prompt,
             )
-            gen_kwargs["do_sample"] = False
 
-        gen_kwargs["stopping_criteria"] = StoppingCriteriaList([self._stopping_criteria])
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            inputs = self.tokenizer(text, return_tensors="pt").to(self._device)
 
-        output_ids = self.model.generate(**gen_kwargs)
-        new_tokens = output_ids[0][inputs["input_ids"].shape[1] :]
-        response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+            gen_kwargs: Dict[str, Any] = {
+                **inputs,
+                "max_new_tokens": max_new_tokens,
+                "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+            }
 
-        result = {
-            "response": response,
-            "tokens_generated": len(new_tokens),
-            "input_tokens": int(inputs["input_ids"].shape[1]),
-            "finish_reason": "stop" if len(new_tokens) < max_new_tokens else "length",
-        }
-        logger.debug(
-            "response_generated",
-            response_length=len(response),
-            tokens=len(new_tokens),
-            in_tokens=result["input_tokens"],
-        )
-        return result
+            # Deterministic when temperature is 0 / very low; otherwise sample
+            if temperature and temperature > 0.01:
+                gen_kwargs.update(
+                    {
+                        "do_sample": True,
+                        "temperature": float(temperature),
+                        "top_p": float(top_p),
+                    }
+                )
+            else:
+                gen_kwargs["do_sample"] = False
+
+            gen_kwargs["stopping_criteria"] = StoppingCriteriaList([self._stopping_criteria])
+
+            output_ids = self.model.generate(**gen_kwargs)
+            new_tokens = output_ids[0][inputs["input_ids"].shape[1] :]
+            response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+            result = {
+                "response": response,
+                "tokens_generated": len(new_tokens),
+                "input_tokens": int(inputs["input_ids"].shape[1]),
+                "finish_reason": "stop" if len(new_tokens) < max_new_tokens else "length",
+            }
+            logger.debug(
+                "response_generated",
+                response_length=len(response),
+                tokens=len(new_tokens),
+                in_tokens=result["input_tokens"],
+            )
+            return result
 
     async def stream_generate_response(
         self,
         user_message: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        emotion_context: Optional[Dict] = None,
-        rag_context: str = "",
         system_prompt: str = SYSTEM_PROMPT,
         max_new_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
     ):
-        """Streaming version of generate_response."""
+        """Streaming version of generate_response — yields tokens as they are generated."""
         import asyncio
         if not self._is_loaded:
             raise RuntimeError("Fast LLM not loaded.")
 
         self.cancel_generation()
 
-        # We won't block the whole lock because we stream, just reset flag
+        # Reset flag for this new generation
         self._stopping_criteria.stop_now = False
 
         max_new_tokens = max_new_tokens or self._settings.max_new_tokens
@@ -300,8 +272,6 @@ class FastReasoner:
         messages = self._build_messages(
             user_message=user_message,
             conversation_history=conversation_history,
-            emotion_context=emotion_context,
-            rag_context=rag_context,
             system_prompt=system_prompt,
         )
 
@@ -339,7 +309,7 @@ class FastReasoner:
         for new_text in streamer:
             yield new_text
             await asyncio.sleep(0)  # Yield control to event loop
-            
+
         thread.join()
 
     @property

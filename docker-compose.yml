@@ -1,40 +1,10 @@
-
-services:
-  # ---------- MongoDB ----------
-  mongodb:
-    image: mongo:7
-    container_name: intellivoice-mongo
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: intellivoice
-      MONGO_INITDB_ROOT_PASSWORD: intellivoice
-    volumes:
-      - mongo-data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ---------- Mongo Express (Admin UI) ----------
-  mongo-express:
-    image: mongo-express:1
-    container_name: intellivoice-mongo-ui
-    restart: unless-stopped
-    ports:
-      - "8081:8081"
-    environment:
-      ME_CONFIG_MONGODB_ADMINUSERNAME: intellivoice
-      ME_CONFIG_MONGODB_ADMINPASSWORD: intellivoice
-      ME_CONFIG_MONGODB_URL: mongodb://intellivoice:intellivoice@mongodb:27017/
-      ME_CONFIG_BASICAUTH: "false"
-    depends_on:
-      mongodb:
-        condition: service_healthy
-
-
-
-volumes:
-  mongo-data:
+# ============================================================
+# IntelliVoice — Docker Compose (minimal)
+# ============================================================
+# No external services required. All models run locally.
+# This file is kept as a placeholder for future services
+# (e.g., monitoring, metrics).
+#
+# The application runs directly via:
+#   uvicorn backend.main:app --host 0.0.0.0 --port 8000
+# ============================================================

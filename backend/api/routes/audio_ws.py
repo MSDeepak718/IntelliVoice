@@ -16,12 +16,11 @@ import base64
 import json
 import time
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from config import get_settings
 from config.logging_config import get_logger
 from backend.core.session_manager import SessionManager, SessionState
-from backend.layers.preprocessing.audio_utils import get_audio_duration
 
 logger = get_logger("ws_audio")
 router = APIRouter()
@@ -41,7 +40,9 @@ async def audio_websocket(websocket: WebSocket):
         3. Server processes and responds with JSON:
             - type: "vad" — voice activity status
             - type: "transcription" — speech transcription
-            - type: "response" — text response + audio
+            - type: "response_start" — LLM started generating
+            - type: "response_chunk" — text fragment
+            - type: "audio_response" — synthesized audio chunk
             - type: "error" — error message
     """
     await websocket.accept()
@@ -101,19 +102,19 @@ async def audio_websocket(websocket: WebSocket):
                             "type": "vad",
                             "status": "speech_start",
                         })
-                        
+
                         # Tell frontend to stop playing audio immediately
                         await websocket.send_json({
                             "type": "interrupt",
                             "status": "user_spoke",
                         })
-                    
+
                     # Interruption logic: if assistant is processing in backend, cancel it
                     if session.is_processing and session.processing_task and not session.processing_task.done():
                         session.processing_task.cancel()
                         pipeline.cancel_processing()
                         session.is_processing = False
-                        
+
                     session.silence_start_time = None
                     continue
 
@@ -121,9 +122,9 @@ async def audio_websocket(websocket: WebSocket):
                 if session.is_speaking:
                     if session.silence_start_time is None:
                         session.silence_start_time = time.time()
-                        
+
                     silence_duration = time.time() - session.silence_start_time
-                    if silence_duration >= 1.2:  # Wait 1.2s to finish completely
+                    if silence_duration >= 0.6:  # 600ms silence = done speaking
                         session.is_speaking = False
                         session.is_processing = True
 
@@ -141,7 +142,7 @@ async def audio_websocket(websocket: WebSocket):
                         # Create background processing task for streaming
                         buffer_copy = bytes(session.audio_buffer)
                         session.reset_audio_buffer()
-                        
+
                         async def process_task(audio_bytes, session_ref):
                             try:
                                 async for chunk in pipeline.stream_process_audio(
@@ -153,7 +154,6 @@ async def audio_websocket(websocket: WebSocket):
                                         await websocket.send_json({
                                             "type": "transcription",
                                             "text": chunk["text"],
-                                            "emotion": chunk.get("emotion", "neutral"),
                                             "language": chunk.get("language", "unknown"),
                                         })
                                     elif chunk["type"] == "response_start":
@@ -170,7 +170,7 @@ async def audio_websocket(websocket: WebSocket):
                                         await websocket.send_json({
                                             "type": "audio_response",
                                             "audio": audio_b64,
-                                            "sample_rate": chunk.get("sample_rate", 22050),
+                                            "sample_rate": chunk.get("sample_rate", 24000),
                                             "format": "pcm_int16_mono",
                                         })
                                     elif chunk["type"] == "error":

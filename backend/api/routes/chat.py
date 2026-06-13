@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
 
 from config.logging_config import get_logger
-from backend.core.session_manager import SessionManager, SessionState
+from backend.core.session_manager import SessionState
 
 logger = get_logger("chat_api")
 router = APIRouter()

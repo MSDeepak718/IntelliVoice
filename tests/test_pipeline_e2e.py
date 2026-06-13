@@ -35,8 +35,8 @@ class TestModelRegistry:
 
     def test_all_models_listed(self):
         models = ModelRegistry.get_all_models()
-        # 2 (preprocessing) + 1 (asr) + 2 (understanding) + 1 (reasoning) + 1 (tts) = 7
-        assert len(models) == 7
+        # VAD + Whisper + LLM + OmniVoice = 4
+        assert len(models) == 4
 
     def test_peak_vram_under_16gb(self):
         # Peak VRAM is just the sum of all estimated VRAM
@@ -45,7 +45,7 @@ class TestModelRegistry:
 
     def test_fast_llm_config(self):
         llm = ModelRegistry.FAST_LLM
-        assert llm.hf_model_id == "Qwen/Qwen2.5-3B-Instruct"
+        assert llm.hf_model_id == "Qwen/Qwen2.5-7B-Instruct"
         assert llm.precision == ModelPrecision.INT4
         assert llm.quantization_config is not None
         assert llm.quantization_config["load_in_4bit"] is True

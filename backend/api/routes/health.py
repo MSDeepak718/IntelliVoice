@@ -11,7 +11,7 @@ import time
 from fastapi import APIRouter, Request
 
 from config import get_settings
-from config.model_registry import ModelRegistry, LoadingOrder
+from config.model_registry import ModelRegistry
 
 router = APIRouter()
 
@@ -44,16 +44,12 @@ async def gpu_health(request: Request):
         },
         "models": {
             "vad": pipeline.vad.is_loaded,
-            "noise_suppressor": pipeline.noise_suppressor.is_loaded,
             "asr": pipeline.asr._is_loaded,
-            "emotion_analyzer": pipeline.emotion_analyzer._is_loaded,
-            "speaker_encoder": pipeline.speaker_encoder._is_loaded,
             "reasoner": pipeline.reasoner.is_loaded,
             "tts": pipeline.tts.is_loaded,
         },
         "memory": {
             "active_sessions": pipeline.memory.active_sessions,
-            "mongodb_connected": pipeline.long_term_memory.is_connected,
         },
     }
 

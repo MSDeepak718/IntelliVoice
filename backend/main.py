@@ -5,7 +5,7 @@ Sets up the FastAPI app with middleware, routes, and lifecycle events.
 """
 
 from __future__ import annotations
-import bitsandbytes  # Workaround: Pre-import to avoid SpeechBrain lazy-load inspect crash
+import bitsandbytes  # Workaround: Pre-import for LLM quantization compatibility
 import torch
 # Workaround: Transformers 4.48+ expects FP8 datatypes which PyTorch 2.5 doesn't have on cu121
 if not hasattr(torch, "float8_e8m0fnu"):
@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     pipeline = AudioPipeline(gpu_manager=gpu_manager)
     app.state.pipeline = pipeline
 
-    # Load all pipeline models (VAD, noisereduce, ASR, LLM, TTS)
+    # Load all pipeline models (VAD, ASR, LLM, TTS)
     await pipeline.initialize()
 
     logger.info("intellivoice_ready", port=settings.port)

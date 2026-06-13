@@ -2,14 +2,14 @@
 
 ## Multilingual Real-Time Speech-to-Speech AI Assistant
 
-A production-grade multilingual speech-to-speech AI assistant that processes audio end-to-end — preserving emotion, tone, accent, and speaker characteristics — while supporting Indian languages and code-mixed conversations. Tuned for the **RTX 4080 16GB** VRAM budget.
+A low-latency multilingual speech-to-speech AI assistant optimized for the **RTX 4080 16GB** VRAM budget. Processes audio end-to-end with streaming LLM output and incremental TTS synthesis for minimal perceived latency.
 
 ---
 
 ## Architecture
 
 ```
-Audio Input -> Preprocessing -> ASR + Emotion/Speaker -> Prompt Assembly -> LLM Reasoning -> TTS Synthesis -> Audio Output
+Audio Input → VAD → ASR → LLM (streaming) → TTS (incremental) → Audio Output
 ```
 
 ### Pipeline Layers
@@ -17,21 +17,17 @@ Audio Input -> Preprocessing -> ASR + Emotion/Speaker -> Prompt Assembly -> LLM 
 | Order | Component | Model | VRAM |
 |-------|-----------|-------|------|
 | 1 | VAD | Silero VAD v5 | 50 MB |
-| 1 | Noise Suppression | resemble-enhance | 0.3 GB |
 | 2 | ASR | Whisper large-v3-turbo (FP16) | 1.5 GB |
-| 3 | Emotion | wav2vec2-base-superb-er (FP16) | 0.3 GB |
-| 3 | Speaker Emb. | ECAPA-TDNN (FP16) | 0.1 GB |
-| 4 | Memory | Conversation + MongoDB | CPU |
-| 5 | Reasoning | Qwen2.5-7B-Instruct (INT4 NF4) | 5.0 GB |
-| 6 | TTS | XTTS-v2 (FP16) | 1.5 GB |
+| 3 | Reasoning | Qwen2.5-7B-Instruct (INT4 NF4) | 5.0 GB |
+| 4 | TTS | OmniVoice (FP16) | 4.0 GB |
 
 ### VRAM Management (16GB target)
 
-| Sub-Total | Notes |
-|------|-------|
-| ~12 GB | Total resident VRAM. Leaves ~4 GB headroom for KV cache and batch inference. |
+| Total | Notes |
+|-------|-------|
+| ~10.5 GB | Leaves ~5.5 GB headroom for KV cache and batch inference. |
 
-> **Concurrency & Execution:** All models are loaded at startup. No lazy loading is implemented to eliminate latency. Whisper and Emotion execute concurrently via asyncio. LLM text output is streamed directly to the XTTS-v2 module.
+> **Concurrency & Execution:** All models are loaded at startup with no lazy loading. LLM text output streams incrementally to TTS on clause/sentence boundaries for minimum first-audio latency. Memory is session-scoped (no external database required).
 
 ---
 
@@ -45,15 +41,7 @@ cp .env.example .env
 # Edit .env with your HuggingFace token if needed
 ```
 
-### 2. Start MongoDB and Qdrant
-
-```bash
-docker compose up -d mongodb qdrant
-```
-
-MongoDB at `localhost:27017`, Qdrant at `localhost:6333`. The in-memory Qdrant fallback (no docker needed) is enabled by default in `.env.example` — set `QDRANT_IN_MEMORY=false` to use the server.
-
-### 3. Install Dependencies
+### 2. Install Dependencies
 
 ```bash
 python -m venv .venv
@@ -61,7 +49,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Download Models
+### 3. Download Models
 
 ```bash
 # Show the VRAM budget
@@ -75,24 +63,22 @@ python scripts/download_models.py
 
 # Or download specific ones
 python scripts/download_models.py --model whisper
-python scripts/download_models.py --model emotion
-python scripts/download_models.py --model ecapa_tdnn
 python scripts/download_models.py --model fast_llm
-python scripts/download_models.py --model xtts
+python scripts/download_models.py --model omnivoice
 ```
 
-### 5. Run the Server
+### 4. Run the Server
 
 ```bash
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 6. Run Tests
+### 5. Run Tests
 
 ```bash
 pytest tests/ -v
-python scripts/test_pipeline.py --layer rag     # RAG only
-python scripts/test_pipeline.py --layer full    # end-to-end
+python scripts/test_pipeline.py --layer preprocessing  # Preprocessing only
+python scripts/test_pipeline.py --layer full            # End-to-end
 ```
 
 ---
@@ -106,8 +92,8 @@ ws://localhost:8000/ws/audio
 ```
 
 Protocol:
-- **Client -> Server**: binary PCM chunks (int16, 16kHz, mono)
-- **Server -> Client**: JSON messages (transcription, response text, base64 audio)
+- **Client → Server**: binary PCM chunks (int16, 16kHz, mono)
+- **Server → Client**: JSON messages (transcription, response text, base64 audio chunks)
 
 ### REST (Text Chat)
 
@@ -135,20 +121,32 @@ GET /health/config   # config + VRAM budget
 IntelliVoice/
 ├── config/                  # settings, model registry, logging
 ├── backend/
-│   ├── api/routes/          # FastAPI endpoints
+│   ├── api/routes/          # FastAPI endpoints (WebSocket, REST, health)
 │   ├── core/                # pipeline orchestrator, GPU manager, sessions
 │   ├── layers/
-│   │   ├── preprocessing/   # VAD, denoising
-│   │   ├── speaker/         # ECAPA-TDNN + SenseVoice
-│   │   ├── reasoning/       # Fast LLM (Qwen2.5-3B)
-│   │   ├── memory/          # conversation, long-term (MongoDB)
-│   │   └── speech_generation/  # CosyVoice 2
+│   │   ├── preprocessing/   # VAD, audio utilities
+│   │   ├── asr/             # Whisper ASR
+│   │   ├── reasoning/       # Qwen2.5-7B-Instruct LLM
+│   │   ├── memory/          # session-scoped conversation memory
+│   │   └── speech_generation/  # OmniVoice TTS
 │   └── services/            # model loader, audio streaming
+├── frontend/                # React UI (Vite)
 ├── scripts/                 # download, benchmark, test
 ├── tests/                   # unit + integration tests
-├── docker/                  # Dockerfile
-└── docker-compose.yml       # MongoDB
+└── assets/                  # reference audio (Thiru.wav)
 ```
+
+---
+
+## Latency Optimizations
+
+- **No noise suppression in critical path** — VAD + Whisper handle noisy audio robustly
+- **No emotion/speaker analysis** — removed GPU contention from critical path
+- **Clause-boundary TTS chunking** — TTS fires on commas/semicolons, not just sentence ends
+- **Word-count fallback flush** — ensures first audio within ~15 tokens regardless of punctuation
+- **0.6s silence threshold** — reduced from 1.2s for faster end-of-speech detection
+- **150 max tokens** — voice-optimized concise responses (1-3 sentences)
+- **Session-scoped memory** — no external database latency
 
 ---
 
@@ -159,7 +157,7 @@ IntelliVoice/
 - Tamil (தமிழ்)
 - Telugu (తెలుగు)
 - Code-mixed (Hinglish, Tanglish, etc.)
-- 100+ via Qwen2-Audio ASR, Fast LLM reasoning, CosyVoice 2 TTS
+- 100+ via Whisper ASR + Qwen2.5 reasoning + OmniVoice TTS
 
 ---
 

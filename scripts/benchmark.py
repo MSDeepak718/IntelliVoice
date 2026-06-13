@@ -69,16 +69,13 @@ async def benchmark_vad(iterations: int = 10):
 
 
 async def benchmark_preprocessing(iterations: int = 10):
-    """Benchmark full preprocessing pipeline."""
+    """Benchmark full preprocessing pipeline (VAD + normalize)."""
     from backend.layers.preprocessing.vad import SileroVAD
-    from backend.layers.preprocessing.noise_suppression import NoiseSuppressor
     from backend.layers.preprocessing.audio_utils import normalize_waveform
 
     print("\n--- Benchmarking Preprocessing Pipeline ---")
     vad = SileroVAD()
     await vad.load()
-    ns = NoiseSuppressor()
-    await ns.load()
 
     waveform = generate_test_audio(3.0)
     times = []
@@ -87,10 +84,8 @@ async def benchmark_preprocessing(iterations: int = 10):
         start = time.perf_counter()
         # VAD
         speech, _ = vad.extract_speech(waveform)
-        # Noise suppression
-        clean = ns.suppress_noise(speech if speech.shape[1] > 0 else waveform)
         # Normalize
-        normalized = normalize_waveform(clean)
+        normalized = normalize_waveform(speech if speech.shape[1] > 0 else waveform)
         elapsed = time.perf_counter() - start
         times.append(elapsed * 1000)
 

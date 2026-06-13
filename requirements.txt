@@ -32,19 +32,11 @@ protobuf>=5.0.0
 # ---------- Silero VAD ----------
 # Loaded via torch.hub, no separate package needed
 
-# ---------- Noise Suppression ----------
-resemble-enhance>=0.0.1
-
-# ---------- MongoDB ----------
-pymongo>=4.8.0
-motor>=3.5.0
-
-# ---------- ASR / Voice / Audio Generation ----------
+# ---------- ASR ----------
 faster-whisper>=1.0.0
-speechbrain>=1.0.0
-TTS>=0.22.0
-onnxruntime-gpu>=1.16.0
 
+# ---------- TTS ----------
+omnivoice
 
 # ---------- Logging & Monitoring ----------
 structlog>=24.0.0
@@ -56,5 +48,4 @@ pytest-asyncio>=0.24.0
 httpx>=0.27.0
 
 # ---------- Utilities ----------
-aiofiles>=24.0.0
 orjson>=3.10.0
